@@ -2573,8 +2573,7 @@ var QUOTE_SOURCES = [
 /* 直連失敗時的中繼站。傳的是公開的收盤價，沒有任何個人資料或金鑰，
    但畢竟是第三方，所以會在訊息裡明講是走中繼站抓到的。 */
 var QUOTE_PROXIES = [
-  function(u){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); },
-  function(u){ return 'https://corsproxy.io/?' + encodeURIComponent(u); }
+  function(u){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
 ];
 
 /* 環境判斷：三種情況的解法完全不同，不講清楚使用者只會一直按同一個按鈕。 */
@@ -2595,8 +2594,23 @@ function showQuoteMsg(text, kind){
   el.className = 'modal-hint' + (kind ? ' '+kind : '');
   el.hidden = false;
 }
+/* fetch 本身沒有逾時。中繼站慢或不回應時，promise 會永遠掛著，
+   訊息就卡在「重試中」、按鈕也解不開——這是第一版真正的 bug。 */
+function fetchWithTimeout(url, ms){
+  if(typeof AbortController === 'undefined'){
+    return fetch(url, {cache:'no-store'});   // 舊瀏覽器：至少不要壞掉
+  }
+  var ctl = new AbortController();
+  var timer = setTimeout(function(){ ctl.abort(); }, ms);
+  return fetch(url, {cache:'no-store', signal:ctl.signal})
+    .then(function(r){ clearTimeout(timer); return r; })
+    .catch(function(e){
+      clearTimeout(timer);
+      throw (e && e.name === 'AbortError') ? new Error('逾時 '+Math.round(ms/1000)+' 秒') : e;
+    });
+}
 /* 依序試：每個來源的每個候選網址先直連，全部失敗才走中繼站。 */
-function fetchQuoteSource(src, useProxy){
+function fetchQuoteSource(src, useProxy, onStep){
   var attempts = [];
   src.urls.forEach(function(u){
     attempts.push({url:u, via:'直連'});
@@ -2608,7 +2622,9 @@ function fetchQuoteSource(src, useProxy){
   function step(i){
     if(i >= attempts.length) return Promise.resolve({src:src, list:[], err:lastErr||new Error('全部失敗')});
     var a = attempts[i];
-    return fetch(a.url, {cache:'no-store'})
+    if(onStep) onStep(src.name, a.via, i+1, attempts.length);
+    /* 中繼站要轉送上百 KB 的資料，給它久一點；直連不該等超過 12 秒 */
+    return fetchWithTimeout(a.url, a.via === '直連' ? 10000 : 15000)
       .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
       .then(function(list){
         if(!Array.isArray(list) || !list.length) throw new Error('回傳格式不對');
@@ -2627,10 +2643,28 @@ function runQuoteUpdate(useProxy){
     showQuoteMsg('沒有台股代號可以更新。美股與基金的報價這個網頁抓不到，請手動輸入。', 'warn');
     return;
   }
+  /* Artifact 版與 file:// 是「一定會失敗」的環境，瀏覽器連請求都不會送出去。
+     還去試逾時只是讓使用者盯著轉圈 44 秒，不如立刻講清楚。 */
+  if(env === 'artifact' || env === 'file'){
+    showQuoteMsg(
+      (env === 'artifact'
+        ? '你現在開的是 <b>Artifact 版</b>（claude.ai 上的網址）。這個版本的安全政策直接禁止網頁對外連線，'+
+          '<b>連請求都送不出去，再按幾次都一樣</b>。'
+        : '你現在是<b>直接打開電腦裡的檔案</b>（網址列開頭是 file://）。瀏覽器不允許本機檔案對外抓資料。')+
+      '<br>把 <b>index.html</b> 傳上 GitHub Pages 或 Netlify，用 https 的網址開，這個按鈕才會真的去抓報價。', '');
+    return;
+  }
   btn.disabled = true;
-  showQuoteMsg(useProxy ? '直連失敗，改用中繼站重試中…' : '連線中…（證交所／櫃買中心的當日收盤價）', 'ok');
+  var progress = {};
+  function paintProgress(){
+    var parts = QUOTE_SOURCES.map(function(sc){ return sc.name+'：'+(progress[sc.name]||'等待中'); });
+    showQuoteMsg((useProxy ? '直連失敗，改用中繼站重試中…<br>' : '連線中…（當日收盤價）<br>')+
+      '<span style="opacity:.75">'+parts.join('　')+'</span>', 'ok');
+  }
+  paintProgress();
+  function onStep(name, via, i, n){ progress[name] = via+' ('+i+'/'+n+')'; paintProgress(); }
 
-  Promise.all(QUOTE_SOURCES.map(function(src){ return fetchQuoteSource(src, useProxy); }))
+  Promise.all(QUOTE_SOURCES.map(function(src){ return fetchQuoteSource(src, useProxy, onStep); }))
    .then(function(results){
     var map = {}, vias = [];
     results.forEach(function(res){
@@ -2681,6 +2715,12 @@ function runQuoteUpdate(useProxy){
             '過一小時再試一次；還是不行的話把這行錯誤訊息給我，我換來源。';
     }
     showQuoteMsg(where+'<br>'+how+'<br><span style="opacity:.75">錯誤：'+esc(detail)+'</span>', '');
+  })
+  .catch(function(e){
+    /* 不該走到這裡，但萬一有預期外的例外，按鈕一定要放開，
+       否則使用者只能重整頁面。 */
+    btn.disabled = false;
+    showQuoteMsg('更新過程出錯了：'+esc(e && e.message || e)+'。請再按一次；一直失敗的話把這行給我。', '');
   });
 }
 document.getElementById('quoteBtn').addEventListener('click', function(){ runQuoteUpdate(false); });
