@@ -3368,48 +3368,46 @@ function parseFbConfig(text){
 function renderSyncSettings(){
   var box = document.getElementById('setSyncBox');
   if(!box) return;
-  var cfg = syncCfg(), st = syncState();
+  var st = syncState();
   var signedIn = !!(typeof fb !== 'undefined' && fb && fb.user);
+  var builtin = usingBuiltin();
   var h = '';
-  if(!cfg){
-    h += '<p class="hint" style="margin-top:0;">到 Firebase 主控台 → 專案設定 → 你的應用程式，'+
-         '把 <code>firebaseConfig = { … }</code> 大括號裡那一整段貼進來。'+
-         '這段是設計成公開的，不是密碼——真正擋人的是「已授權網域」和登入身分。</p>'+
-         '<textarea id="setFbCfg" rows="6" placeholder=\'apiKey: "AIza…",\nauthDomain: "xxx.firebaseapp.com",\nprojectId: "xxx",\n…\'></textarea>'+
-         '<button class="btn-ghost" id="setFbSave" style="margin-top:8px;">儲存設定</button>';
+
+  if(signedIn){
+    h += '<div class="rowline" style="margin-bottom:10px;">'+
+         '<span class="tag" style="background:var(--ok-soft)">已登入 '+esc(fb.user.email||'')+'</span></div>'+
+         '<div class="rowline">'+
+         '<button class="btn-ghost" id="setPull">⤓ 立即取回</button>'+
+         '<button class="btn-ghost" id="setPush">⤒ 立即上傳</button>'+
+         '<button class="btn-ghost" id="setOut">登出</button></div>';
   } else {
-    h += '<p class="hint" style="margin-top:0;">專案：<b>'+esc(cfg.projectId)+'</b></p>';
-    if(signedIn){
-      h += '<div class="rowline" style="margin-bottom:8px;">'+
-           '<span class="tag" style="background:var(--ok-soft)">已登入 '+esc(fb.user.email||'')+'</span></div>'+
-           '<div class="rowline">'+
-           '<button class="btn-ghost" id="setPull">⤓ 立即取回</button>'+
-           '<button class="btn-ghost" id="setPush">⤒ 立即上傳</button>'+
-           '<button class="btn-ghost" id="setOut">登出</button></div>';
-    } else {
-      h += '<button class="btn-primary" id="setIn" style="width:100%;">用 Google 登入</button>';
-    }
-    h += '<p class="hint">'+
-      (st.lastPull ? '最後取回 '+st.lastPull.slice(0,16).replace('T',' ') : '尚未取回')+'　'+
-      (st.lastPush ? '最後上傳 '+st.lastPush.slice(0,16).replace('T',' ') : '尚未上傳')+
-      (st.err ? '<br><span style="color:var(--danger)">'+esc(st.err)+'</span>' : '')+
-      '<br>登入後每次改動會在停手幾秒後自動上傳；上傳前一定先取回合併，'+
-      '所以另一台裝置剛記的帳不會被蓋掉。</p>'+
-      '<button class="danger-link" id="setFbClear">清除 Firebase 設定</button>';
+    h += '<p class="hint" style="margin-top:0;">按下去用 Google 登入，電腦與手機就會共用同一份資料。'+
+         '每個人登入自己的帳號，資料各自獨立、互相看不到。</p>'+
+         '<button class="btn-primary" id="setIn" style="width:100%;">用 Google 登入</button>';
   }
+  h += '<p class="hint">'+
+    (st.lastPull ? '最後取回 '+st.lastPull.slice(0,16).replace('T',' ') : '尚未取回')+'　'+
+    (st.lastPush ? '最後上傳 '+st.lastPush.slice(0,16).replace('T',' ') : '尚未上傳')+
+    (st.err ? '<br><span style="color:var(--danger); font-weight:800;">'+esc(st.err)+'</span>' : '')+
+    '<br>登入後每次改動會在停手幾秒後自動上傳，另一台會即時收到。'+
+    '上傳前一定先取回合併，所以另一台剛記的帳不會被蓋掉。</p>';
+
+  /* 進階：想用自己的 Firebase 專案才需要動這裡，預設收起來不干擾 */
+  h += '<details style="margin-top:10px;"><summary style="font-size:13px; color:var(--muted); font-weight:800; cursor:pointer;">'+
+       '進階：'+(builtin ? '改用自己的 Firebase 專案' : '目前用自訂專案 '+esc(customCfg().projectId))+'</summary>'+
+       '<p class="hint">預設用內建的雲端專案（'+esc(BUILTIN_FB_CONFIG.projectId)+'），一般情況不用動。'+
+       '想把資料放在自己的 Firebase 才需要貼自己的設定。</p>'+
+       '<textarea id="setFbCfg" rows="5" placeholder=\'apiKey: "…", projectId: "…", …\'></textarea>'+
+       '<div class="rowline" style="margin-top:8px;">'+
+       '<button class="btn-ghost" id="setFbSave">使用這組設定</button>'+
+       (builtin ? '' : '<button class="danger-link" id="setFbClear">還原成內建設定</button>')+
+       '</div></details>';
+
   box.innerHTML = h;
 
   var el;
-  if((el = document.getElementById('setFbSave'))) el.addEventListener('click', function(){
-    var cfg2 = parseFbConfig(document.getElementById('setFbCfg').value);
-    if(!cfg2){ showToast('看不出 apiKey 與 projectId，請把整段設定貼進來。','err',7000); return; }
-    write('wm.fbConfig', cfg2);
-    showToast('設定已存，正在載入 Firebase…','ok');
-    initFirebase().then(function(){ renderSyncSettings(); renderSyncBadge(); })
-      .catch(function(e){ showToast('Firebase 載入失敗：'+(e&&e.message||e),'err',8000); });
-  });
   if((el = document.getElementById('setIn'))) el.addEventListener('click', function(){
-    signIn().then(function(){ setTimeout(renderSyncSettings, 600); });
+    signIn().then(function(){ setTimeout(renderSyncSettings, 800); });
   });
   if((el = document.getElementById('setOut'))) el.addEventListener('click', function(){
     signOut(); setTimeout(renderSyncSettings, 300);
@@ -3420,9 +3418,17 @@ function renderSyncSettings(){
   if((el = document.getElementById('setPush'))) el.addEventListener('click', function(){
     syncPush(false).then(function(){ renderSyncSettings(); });
   });
+  if((el = document.getElementById('setFbSave'))) el.addEventListener('click', function(){
+    var cfg2 = parseFbConfig(document.getElementById('setFbCfg').value);
+    if(!cfg2){ showToast('看不出 apiKey 與 projectId，請把整段設定貼進來。','err',7000); return; }
+    write('wm.fbConfig', cfg2);
+    askConfirm({title:'換成自訂專案', ok:'重新載入',
+      body:'換專案之後這台裝置會連到新的資料庫，本機資料不會消失，但要重新登入並上傳一次。'},
+      function(){ location.reload(); });
+  });
   if((el = document.getElementById('setFbClear'))) el.addEventListener('click', function(){
-    askConfirm({title:'清除 Firebase 設定', danger:true, ok:'清除',
-      body:'只會清掉這台裝置的雲端設定，本機資料與雲端資料都不會被刪。'}, function(){
+    askConfirm({title:'還原成內建設定', danger:true, ok:'還原',
+      body:'會改回內建的雲端專案。本機資料與兩邊雲端的資料都不會被刪。'}, function(){
       write('wm.fbConfig', null); location.reload();
     });
   });
@@ -3752,7 +3758,24 @@ handleQuickAdd();
 var FB_SDK = 'https://cdn.jsdelivr.net/npm/firebase@10.12.2/';
 var fb = {app:null, auth:null, db:null, user:null, ready:false, loading:false, unsub:null, lastSynced:null};
 
-function syncCfg(){ return read('wm.fbConfig', null); }
+/* 內建的雲端專案。Firebase 的網頁設定是設計成公開的，不是密碼——
+   真正擋人的是 Firebase 的「已授權網域」加上 Firestore 規則（只有本人讀得到自己的 uid）。
+   寫死在這裡的意義是：拿到網址的人只要用自己的 Google 帳號登入就能用，
+   各自的資料互相看不到，不必手動貼設定。 */
+var BUILTIN_FB_CONFIG = {
+  apiKey: "AIzaSyAFMFuWDA5fWeUCFs4_Am_w42RAntbbTAA",
+  authDomain: "woodys-money-207ff.firebaseapp.com",
+  projectId: "woodys-money-207ff",
+  storageBucket: "woodys-money-207ff.firebasestorage.app",
+  messagingSenderId: "973320939899",
+  appId: "1:973320939899:web:51d5e18e48eb7e8b4535de"
+};
+function customCfg(){
+  var c = read('wm.fbConfig', null);
+  return (c && c.apiKey && c.projectId) ? c : null;
+}
+function usingBuiltin(){ return !customCfg(); }
+function syncCfg(){ return customCfg() || BUILTIN_FB_CONFIG; }
 function syncEnabled(){ var c = syncCfg(); return !!(c && c.apiKey && c.projectId); }
 function syncState(){ return read('wm.syncState', {lastPull:'', lastPush:'', err:''}); }
 /* Firebase 的錯誤訊息是英文代碼，直接丟給使用者等於沒說。 */
@@ -3996,7 +4019,14 @@ function renderSyncBadge(){
   var el = document.getElementById('syncBadge');
   if(!el) return;
   if(!syncEnabled()){ el.innerHTML = '<span class="sdot off"></span>未設定雲端同步'; return; }
+  /* 設定已內建，所以「還沒登入」才是一般人會遇到的起點——直接叫他登入。 */
   var st = syncState();
+  /* 還沒登入就先邀請登入。這時候的錯誤多半只是 SDK 還沒載完或沒網路，
+     使用者連試都還沒試，跳紅字只會嚇人。 */
+  if(!(fb && fb.user)){
+    el.innerHTML = '<span class="sdot off"></span>點我用 Google 登入，兩台裝置就會同步';
+    return;
+  }
   if(fb && fb.user){
     var t = st.lastPush || st.lastPull;
     /* 登入成功不等於讀寫被允許。規則沒發布時 Firestore 會擋下所有讀寫，
@@ -4011,14 +4041,12 @@ function renderSyncBadge(){
         esc((fb.user.email||'已登入').split('@')[0]) +
         (fb.unsub ? '　即時同步中' : (t ? '　'+t.slice(11,16) : ''));
     }
-  } else if(st.err){
-    el.innerHTML = '<span class="sdot err"></span>同步有問題';
-  } else {
-    el.innerHTML = '<span class="sdot off"></span>尚未登入';
   }
 }
 if(syncEnabled()){
-  initFirebase().catch(function(e){ setSyncState({err:humanSyncErr(e)}); });
+  /* 開頁時載入失敗（沒網路、CDN 被擋）不算「同步出問題」——
+     使用者還沒按任何東西，不該看到紅字。真的要用的時候按登入會再試一次。 */
+  initFirebase().catch(function(e){ renderSyncBadge(); });
 }
 
 </script>
