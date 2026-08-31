@@ -636,9 +636,14 @@
           <div class="alertlist" id="homeAlerts"></div>
         </div>
         <div class="hpanel">
-          <h2>固定收支 <span class="count" id="fixCount"></span>
-            <button class="more" id="fixManage">管理 →</button></h2>
-          <div id="homeFixed"></div>
+          <h2>固定收入 <span class="count" id="fixInCount"></span>
+            <button class="more" data-fixgo="in">管理 →</button></h2>
+          <div id="homeFixedIn"></div>
+        </div>
+        <div class="hpanel">
+          <h2>固定支出 <span class="count" id="fixOutCount"></span>
+            <button class="more" data-fixgo="out">管理 →</button></h2>
+          <div id="homeFixedOut"></div>
         </div>
         <div class="hpanel">
           <h2>本月支出前五名 <button class="more" data-go="reports">完整報表 →</button></h2>
@@ -1692,9 +1697,11 @@ function postRecur(id){
     saveTx(); saveRecurs(); renderAll(); showToast('已記進帳本。','ok');
   });
 }
-function openRecurModal(r){
+function openRecurModal(r, defaultKind){
   var isNew = !r;
-  r = r || {id:null, name:'', kind:'out', amount:'', cat:cats.out[0], accId:accounts[0]&&accounts[0].id,
+  var k = defaultKind || 'out';
+  r = r || {id:null, name:'', kind:k, amount:'',
+            cat:(k==='in' ? cats.in[0] : cats.out[0]), accId:accounts[0]&&accounts[0].id,
             freq:'monthly', day:new Date().getDate(), start:todayStr(), end:'', lastDate:''};
   var h = '<h2>'+(isNew?'新增週期項目':'編輯週期項目')+'</h2>'+
     '<div class="field"><label for="rName">名稱</label><input id="rName" type="text" value="'+esc(r.name)+'" placeholder="例：房租、南山保費、Netflix"></div>'+
@@ -3042,49 +3049,60 @@ function renderHome(){
   renderBuddy();
 }
 
-/* 首頁的固定收支面板：Netflix、電話費、房租這種每月固定發生的項目，
-   一眼看到每月固定要出去多少、固定進來多少，以及下一期是什麼時候。 */
+/* 首頁的固定收支：收入與支出各一個框。
+   混在一起時「每月固定支出 15,989　每月固定收入 8,400」兩個數字擠在同一行，
+   要花一秒才分得出哪個是哪個；拆開之後各自只有一個總額，掃一眼就懂。
+   每月化的換算：每週 ×4.345（一年 52 週 ÷ 12）、每年 ÷12，三種頻率才能相加。 */
 function renderFixedPanel(){
-  var box = document.getElementById('homeFixed');
-  document.getElementById('fixCount').textContent = recurs.length ? recurs.length+' 項' : '';
-  if(!recurs.length){
-    box.innerHTML = '<div class="hempty">還沒有固定收支。房租、電話費、Netflix、保費——'+
-      '登記一次，每期到了就在這裡提醒你。<br><br>'+
-      '<button class="btn-ghost" id="fixAdd">＋ 新增固定收支</button></div>';
-    document.getElementById('fixAdd').addEventListener('click', function(){ openRecurModal(null); });
-    return;
-  }
-  var monthlyOut = 0, monthlyIn = 0;
-  /* 換算成每月：每週 ×4.345、每年 ÷12，這樣三種頻率才能加在一起。 */
-  recurs.forEach(function(r){
-    var f = r.freq==='weekly' ? 4.345 : r.freq==='yearly' ? (1/12) : 1;
-    var v = (Number(r.amount)||0) * f;
-    if(r.kind==='in') monthlyIn += v; else monthlyOut += v;
+  [['in','homeFixedIn','fixInCount'], ['out','homeFixedOut','fixOutCount']].forEach(function(cfg){
+    var kind = cfg[0], box = document.getElementById(cfg[1]);
+    var list = recurs.filter(function(r){ return (r.kind||'out') === kind; });
+    document.getElementById(cfg[2]).textContent = list.length ? list.length+' 項' : '';
+
+    if(!list.length){
+      box.innerHTML = '<div class="hempty">' +
+        (kind==='in'
+          ? '還沒有固定收入。薪資、兼課鐘點費、房租收入——登記一次，每期到了就提醒你。'
+          : '還沒有固定支出。房租、電話費、Netflix、保費——登記一次，每期到了就提醒你。') +
+        '<br><br><button class="btn-ghost" data-fixadd="'+kind+'">＋ 新增固定'+(kind==='in'?'收入':'支出')+'</button></div>';
+      return;
+    }
+    var monthly = list.reduce(function(sum, r){
+      var f = r.freq==='weekly' ? 4.345 : r.freq==='yearly' ? (1/12) : 1;
+      return sum + (Number(r.amount)||0) * f;
+    }, 0);
+    var h = '<div class="rowline" style="margin-bottom:12px;">'+
+      '<span class="tag" style="background:'+(kind==='in'?'var(--ok-soft)':'var(--danger-soft)')+'">'+
+      '每月合計 '+money(monthly)+'</span>'+
+      '<button class="btn-ghost" data-fixadd="'+kind+'" style="padding:4px 12px; font-size:13px;">＋ 新增</button></div>';
+
+    list.slice().sort(function(x,y){ return (nextDue(x)||'9999') < (nextDue(y)||'9999') ? -1 : 1; })
+      .slice(0,8).forEach(function(r){
+        var due = nextDue(r);
+        var overdue = due && due <= todayStr();
+        h += '<div class="hrow">'+ iconBadge(r.cat, r.kind) +
+          '<span class="hbody"><span class="t">'+esc(r.name)+
+          ' <span class="tag">'+FREQ_LABEL[r.freq]+'</span>'+
+          (overdue ? ' <span class="tag" style="background:var(--danger); color:#fff;">該記了</span>' : '')+'</span>'+
+          '<span class="s">'+(due ? ('下一期 '+due) : '已結束')+' · '+esc(accName(r.accId))+'</span></span>'+
+          '<span class="txamt '+(kind==='in'?'in':'out')+'">'+(kind==='in'?'$+':'$-')+money(r.amount)+'</span>'+
+          (due ? '<button class="rowbtn" data-hpost="'+r.id+'" style="margin-left:10px;">記一筆</button>' : '')+
+          '</div>';
+      });
+    if(list.length > 8) h += '<div class="hempty">另有 '+(list.length-8)+' 項，到帳本的「固定收支」看完整清單。</div>';
+    box.innerHTML = h;
   });
-  var h = '<div class="rowline" style="gap:14px; margin-bottom:12px;">'+
-    '<span class="tag" style="background:var(--danger-soft)">每月固定支出 '+money(monthlyOut)+'</span>'+
-    (monthlyIn ? '<span class="tag" style="background:var(--ok-soft)">每月固定收入 '+money(monthlyIn)+'</span>' : '')+
-    '</div>';
-  var sorted = recurs.slice().sort(function(a,b){ return (nextDue(a)||'9999') < (nextDue(b)||'9999') ? -1 : 1; });
-  sorted.slice(0,8).forEach(function(r){
-    var due = nextDue(r);
-    var overdue = due && due <= todayStr();
-    h += '<div class="hrow">'+ iconBadge(r.cat, r.kind) +
-      '<span class="hbody"><span class="t">'+esc(r.name)+
-      ' <span class="tag">'+FREQ_LABEL[r.freq]+'</span>'+
-      (overdue ? ' <span class="tag" style="background:var(--danger); color:#fff;">該記了</span>' : '')+'</span>'+
-      '<span class="s">'+(due ? ('下一期 '+due) : '已結束')+' · '+esc(accName(r.accId))+'</span></span>'+
-      '<span class="txamt '+(r.kind==='in'?'in':'out')+'">'+(r.kind==='in'?'$+':'$-')+money(r.amount)+'</span>'+
-      (due ? '<button class="rowbtn" data-hpost="'+r.id+'" style="margin-left:10px;">記一筆</button>' : '')+
-      '</div>';
-  });
-  if(sorted.length > 8) h += '<div class="hempty">另有 '+(sorted.length-8)+' 項，到帳本的「固定收支」看完整清單。</div>';
-  box.innerHTML = h;
-  Array.prototype.forEach.call(box.querySelectorAll('[data-hpost]'), function(b){
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-hpost]'), function(b){
     b.addEventListener('click', function(){ postRecur(b.getAttribute('data-hpost')); });
   });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-fixadd]'), function(b){
+    b.addEventListener('click', function(){ openRecurModal(null, b.getAttribute('data-fixadd')); });
+  });
 }
-document.getElementById('fixManage').addEventListener('click', function(){ goto('ledger','recur'); });
+Array.prototype.forEach.call(document.querySelectorAll('[data-fixgo]'), function(b){
+  b.addEventListener('click', function(){ goto('ledger','recur'); });
+});
 
 /* ==========================================================================
    設定
