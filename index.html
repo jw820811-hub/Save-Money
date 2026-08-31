@@ -3755,6 +3755,16 @@ var fb = {app:null, auth:null, db:null, user:null, ready:false, loading:false, u
 function syncCfg(){ return read('wm.fbConfig', null); }
 function syncEnabled(){ var c = syncCfg(); return !!(c && c.apiKey && c.projectId); }
 function syncState(){ return read('wm.syncState', {lastPull:'', lastPush:'', err:''}); }
+/* Firebase 的錯誤訊息是英文代碼，直接丟給使用者等於沒說。 */
+function humanSyncErr(e){
+  var m = String((e && (e.code || e.message)) || e || '');
+  if(/permission-denied|insufficient permissions/i.test(m))
+    return '權限被拒：Firestore 的「規則」還沒發布成只允許本人讀寫。到 Firebase → Firestore Database → 規則，貼上我給你的那段再按「發布」。';
+  if(/unavailable|network/i.test(m)) return '連不上 Firestore（網路問題或服務暫時異常）。';
+  if(/not-found|NOT_FOUND/i.test(m)) return '找不到 Firestore 資料庫——可能還沒建立，或建在別的專案。';
+  if(/unauthorized-domain/i.test(m)) return '這個網域還沒加進 Firebase 的「已授權網域」。';
+  return m;
+}
 function setSyncState(o){
   var st = syncState();
   Object.keys(o).forEach(function(k){ st[k] = o[k]; });
@@ -3887,7 +3897,7 @@ function syncPull(silent){
     if(!silent) showToast('已從雲端取回並合併。', 'ok');
     else if(txs.length !== before) showToast('已同步雲端資料（收支 '+txs.length+' 筆）。','ok');
   }).catch(function(e){
-    setSyncState({err:String(e && e.message || e)});
+    setSyncState({err:humanSyncErr(e)});
     if(!silent) showToast('取回失敗：'+(e && e.message || e), 'err', 7000);
   });
 }
@@ -3914,7 +3924,7 @@ function syncPush(silent){
       if(!silent) showToast('已同步到雲端。', 'ok');
     });
   }).catch(function(e){
-    setSyncState({err:String(e && e.message || e)});
+    setSyncState({err:humanSyncErr(e)});
     if(!silent) showToast('上傳失敗：'+(e && e.message || e), 'err', 7000);
   });
 }
@@ -3945,10 +3955,11 @@ function startLive(){
       renderAll();
       showToast('收到另一台裝置的更新。','ok');
     }, function(err){
-      setSyncState({err:'即時同步中斷：'+String(err && err.message || err)});
+      if(fb.unsub){ fb.unsub = null; }   // 監聽已經死了，別再顯示「即時同步中」
+      setSyncState({err:humanSyncErr(err)});
     });
     renderSyncBadge();
-  }catch(e){ setSyncState({err:String(e && e.message || e)}); }
+  }catch(e){ setSyncState({err:humanSyncErr(e)}); }
 }
 
 /* 有變動就排一次推送，但要等使用者停手——連續記三筆不該推三次。
@@ -3988,9 +3999,18 @@ function renderSyncBadge(){
   var st = syncState();
   if(fb && fb.user){
     var t = st.lastPush || st.lastPull;
-    el.innerHTML = '<span class="sdot on'+(fb.unsub?' live':'')+'"></span>' +
-      esc((fb.user.email||'已登入').split('@')[0]) +
-      (fb.unsub ? '　即時同步中' : (t ? '　'+t.slice(11,16) : ''));
+    /* 登入成功不等於讀寫被允許。規則沒發布時 Firestore 會擋下所有讀寫，
+       這時仍然「已登入、監聽已掛上」——第一版一律顯示綠燈，
+       使用者看到綠燈卻同步不了，完全無從查起。有錯就要說。 */
+    if(st.err){
+      el.innerHTML = '<span class="sdot err"></span>同步被擋下，點我看原因';
+    } else if(!st.lastPush && !st.lastPull){
+      el.innerHTML = '<span class="sdot off"></span>'+esc((fb.user.email||'').split('@')[0])+'　尚未同步過';
+    } else {
+      el.innerHTML = '<span class="sdot on'+(fb.unsub?' live':'')+'"></span>' +
+        esc((fb.user.email||'已登入').split('@')[0]) +
+        (fb.unsub ? '　即時同步中' : (t ? '　'+t.slice(11,16) : ''));
+    }
   } else if(st.err){
     el.innerHTML = '<span class="sdot err"></span>同步有問題';
   } else {
@@ -3998,7 +4018,7 @@ function renderSyncBadge(){
   }
 }
 if(syncEnabled()){
-  initFirebase().catch(function(e){ setSyncState({err:String(e && e.message || e)}); });
+  initFirebase().catch(function(e){ setSyncState({err:humanSyncErr(e)}); });
 }
 
 </script>
