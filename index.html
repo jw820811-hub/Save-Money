@@ -568,6 +568,21 @@
   .rowline{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
   .rowline .grow{flex:1; min-width:130px;}
 
+  /* ============ 捷徑快速記帳的確認橫幅 ============ */
+  .qabanner{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:var(--ok-soft); border:var(--bw) solid var(--line); border-radius:var(--r-lg);
+    padding:16px 18px; margin-bottom:20px;
+  }
+  .qabanner.err{background:var(--danger-soft);}
+  .qabanner .qat{font-size:17px; font-weight:900;}
+  .qabanner .qas{font-size:13.5px; color:var(--ink-soft); font-weight:600; margin-top:2px;}
+  .qabanner .qaamt{
+    font-family:var(--font-num); font-size:30px; font-weight:900; margin-left:auto;
+    font-variant-numeric:tabular-nums; letter-spacing:-.02em;
+  }
+  .qabanner .qaacts{display:flex; gap:8px; width:100%;}
+
 </style>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;600;700;800;900&family=Noto+Sans+TC:wght@500;700;900&family=Pacifico&family=Kaushan+Script&family=Dancing+Script:wght@700&family=Great+Vibes&family=Sacramento&display=swap">
@@ -610,6 +625,8 @@
 </header>
 
 <div class="page">
+
+  <div class="qabanner" id="qaBanner" hidden></div>
 
   <!-- ============ 總覽 ============ -->
   <section class="view active" id="view-home">
@@ -3440,6 +3457,128 @@ document.getElementById('doLegacy').addEventListener('click', function(){
 });
 
 /* ==========================================================================
+   捷徑快速記帳（網址參數）
+   --------------------------------------------------------------------------
+   iOS 捷徑沒辦法直接寫進瀏覽器的 localStorage，所以走網址：
+     ?add=out&amt=120&cat=午餐&note=便當
+   捷徑那端用「要求輸入（數字）」叫出數字鍵盤，把金額接到網址上，
+   開啟網頁時這裡接手記帳。
+   支援的參數：add=out|in、amt、cat、note、acc、date；
+   只給 add 不給 amt 就直接打開記一筆表單並聚焦金額欄。
+
+   防重複記帳：處理完立刻用 replaceState 把參數從網址拿掉，
+   再存一份指紋，兩分鐘內同樣的參數不會重記——手機上重整、
+   或從背景切回來重跑，都不該多記一筆。
+   ========================================================================== */
+/* 一定要從「呼叫時傳進來的字串」讀，不能讀 location.search——
+   清網址是在讀參數之前做的，讀 location.search 會全部變空。 */
+function qaParam(qs, name){
+  try{
+    var m = new RegExp('[?&]'+name+'=([^&]*)').exec(qs || '');
+    return m ? decodeURIComponent(m[1].replace(/\+/g,' ')) : '';
+  }catch(e){ return ''; }
+}
+function qaResolveCat(name, kind){
+  var list = cats[kind==='in'?'in':'out'] || [];
+  var other = cats[kind==='in'?'out':'in'] || [];
+  if(!name) return list[0] || '其他';
+  if(list.indexOf(name) !== -1) return name;
+  if(other.indexOf(name) !== -1) return name;
+  var hit = list.filter(function(c){ return c.indexOf(name) === 0 || name.indexOf(c) === 0; })[0];
+  return hit || (list.indexOf('其他') !== -1 ? '其他' : (list[0] || '其他'));
+}
+function qaResolveAcc(name){
+  if(name){
+    var byName = accounts.filter(function(a){ return a.name === name; })[0];
+    if(byName) return byName.id;
+    var loose = accounts.filter(function(a){ return a.name.indexOf(name) !== -1; })[0];
+    if(loose) return loose.id;
+  }
+  return accounts.length ? accounts[0].id : '';
+}
+function qaBanner(html, isErr){
+  var el = document.getElementById('qaBanner');
+  el.className = 'qabanner' + (isErr ? ' err' : '');
+  el.innerHTML = html;
+  el.hidden = false;
+}
+function handleQuickAdd(){
+  var raw = location.search;
+  var kind = qaParam(raw, 'add');
+  if(kind !== 'out' && kind !== 'in') return;
+
+  history.replaceState(null, '', location.pathname + location.hash);   // 參數讀進 raw 之後才清網址
+
+  var amtRaw = qaParam(raw, 'amt');
+  if(!amtRaw){          // 只叫出表單，不直接記
+    openTxModal(null, {kind:kind});
+    setTimeout(function(){
+      var el = document.getElementById('txAmt');
+      if(el) el.focus();
+    }, 120);
+    return;
+  }
+  var amt = Math.round(Number(String(amtRaw).replace(/[^0-9.\-]/g,'')));
+  if(!amt || amt <= 0 || !isFinite(amt)){
+    qaBanner('<div><div class="qat">捷徑傳來的金額看不懂</div>'+
+      '<div class="qas">收到的是「'+esc(amtRaw)+'」。請確認捷徑裡「要求輸入」的類型設成<b>數字</b>。</div></div>', true);
+    return;
+  }
+  /* 兩分鐘內同樣的參數視為重複觸發 */
+  var last = read('wm.qaLast', null);
+  if(last && last.q === raw && (Date.now() - last.t) < 120000){
+    qaBanner('<div><div class="qat">這筆剛剛已經記過了</div>'+
+      '<div class="qas">兩分鐘內收到一模一樣的參數，為了避免重複記帳所以跳過。'+
+      '真的要再記一次請用下面的按鈕。</div></div>'+
+      '<div class="qaacts"><button class="btn-ghost" id="qaForce">還是要再記一筆</button></div>', true);
+    document.getElementById('qaForce').addEventListener('click', function(){
+      write('wm.qaLast', null); location.search = raw.slice(1);
+    });
+    return;
+  }
+  write('wm.qaLast', {q:raw, t:Date.now()});
+
+  var cat = qaResolveCat(qaParam(raw, 'cat'), kind);
+  var accId = qaResolveAcc(qaParam(raw, 'acc'));
+  var date = qaParam(raw, 'date') || todayStr();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayStr();
+
+  var rec = {id:uid('tx'), date:date, kind:kind, amount:amt, cat:cat, accId:accId, toAccId:'',
+    note:qaParam(raw, 'note') || '', goalId:'', goalAmt:0, hid:'', src:'shortcut',
+    createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
+  txs.push(rec); saveTx();
+  goto('home');
+
+  qaBanner(
+    '<div>'+iconBadge(cat, kind)+'</div>'+
+    '<div><div class="qat">已記一筆'+(kind==='in'?'收入':'支出')+'</div>'+
+    '<div class="qas">'+esc(cat)+'　'+esc(accName(accId))+'　'+esc(date)+
+    (rec.note ? '　'+esc(rec.note) : '')+'</div></div>'+
+    '<div class="qaamt '+(kind==='in'?'in':'out')+'">'+(kind==='in'?'$+':'$-')+money(amt)+'</div>'+
+    '<div class="qaacts">'+
+      '<button class="btn-ghost" id="qaUndo">撤銷這筆</button>'+
+      '<button class="btn-ghost" id="qaEdit">改內容</button>'+
+      '<button class="btn-ghost" id="qaHide">知道了</button></div>');
+
+  document.getElementById('qaUndo').addEventListener('click', function(){
+    txs = txs.filter(function(t){ return t.id !== rec.id; });
+    saveTx(); write('wm.qaLast', null); renderAll();
+    qaBanner('<div><div class="qat">已撤銷</div><div class="qas">那筆紀錄移除了。</div></div>'+
+      '<div class="qaacts"><button class="btn-ghost" id="qaHide2">知道了</button></div>', true);
+    document.getElementById('qaHide2').addEventListener('click', function(){
+      document.getElementById('qaBanner').hidden = true;
+    });
+  });
+  document.getElementById('qaEdit').addEventListener('click', function(){
+    var t = txs.filter(function(x){ return x.id === rec.id; })[0];
+    if(t) openTxModal(t);
+  });
+  document.getElementById('qaHide').addEventListener('click', function(){
+    document.getElementById('qaBanner').hidden = true;
+  });
+}
+
+/* ==========================================================================
    啟動
    ========================================================================== */
 function renderAll(){
@@ -3455,6 +3594,7 @@ function renderAll(){
 }
 applyTheme();
 applyNav();
+handleQuickAdd();
 
 </script>
 </body>
