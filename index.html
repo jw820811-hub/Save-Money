@@ -800,6 +800,7 @@
         <div class="kpi"><div class="k">成本 · 累計配息</div><div class="v num" id="hCost">—</div><div class="s" id="hDivSub"></div><div class="s in num" id="hDiv"></div></div>
       </div>
       <div class="tablewrap"><table class="dt" id="holdTable"></table></div>
+      <div class="hint" id="plModeHint"></div>
       <div class="hint"><b>原有持股只登記、不動帳戶</b>——你以前買的錢早就出去了，現在的帳戶餘額已經反映過。
         只有新增時選「現在買入」才會從帳戶扣款，賣出時才會入帳；這兩種紀錄都<b>不算收入或支出</b>，
         不會影響預算與儲蓄率。<br>
@@ -1072,6 +1073,11 @@ if(settings.charVersion !== 3){
 }
 if(settings.buddyImg === undefined) settings.buddyImg = '';
 if(!settings.logoFont) settings.logoFont = 'pacifico';
+/* 損益口徑：net = 扣掉賣出手續費與證交稅的參考損益（跟券商 App 同一個口徑）。
+   折扣 0.28 是 2026-08-31 用使用者的國泰世華實際數字反推出來的：
+   毛損益 50,038 − 券商 49,699 = 339 = 證交稅 241 + 手續費 98(2.8折，最低20)。 */
+if(!settings.plMode) settings.plMode = 'net';
+if(settings.feeDiscount == null) settings.feeDiscount = 0.28;
 /* 分類改版：把新的預設分類補進使用者現有的清單，不刪掉他自己加的。 */
 if(settings.catsVersion !== 2){
   DEFAULT_CATS.out.forEach(function(c){ if(cats.out.indexOf(c) === -1) cats.out.push(c); });
@@ -1255,6 +1261,30 @@ function creditOwed(){
   return accounts.reduce(function(s,a){
     return s + (a.kind==='credit' ? Math.min(0, accountBalance(a.id)) : 0);
   }, 0);
+}
+/* 台股賣出成本：手續費 0.1425% × 券商折扣（最低 20 元）＋ 證交稅。
+   證交稅 ETF 是 0.1%、個股 0.3%——0050 這種 00 開頭的代號就是 ETF，
+   用代號判斷比用「類型」欄位可靠，因為類型是使用者自己選的。 */
+function isETF(h){
+  return /^00/.test(String(h.symbol||'')) || h.type === 'ETF';
+}
+function sellCostOf(h){
+  var mkt = (Number(h.shares)||0) * (Number(h.price)||0);
+  if(mkt <= 0) return 0;
+  if(!/^[0-9]{4,6}[A-Z]?$/.test(String(h.symbol||'').trim())) return 0;  // 非台股不套用
+  var d = Number(settings.feeDiscount);
+  if(!(d > 0 && d <= 1)) d = 1;
+  var fee = Math.max(20, Math.floor(mkt * 0.001425 * d));
+  var tax = Math.floor(mkt * (isETF(h) ? 0.001 : 0.003));
+  return fee + tax;
+}
+function plOf(h){
+  var mkt = (Number(h.shares)||0) * (Number(h.price)||0);
+  var gross = mkt - (Number(h.cost)||0);
+  return settings.plMode === 'net' ? gross - sellCostOf(h) : gross;
+}
+function totalSellCost(){
+  return holdings.reduce(function(s,h){ return s + sellCostOf(h); }, 0);
 }
 function holdingsMarket(){
   return holdings.reduce(function(s,h){ return s + (Number(h.shares)||0)*(Number(h.price)||0); }, 0);
@@ -2337,10 +2367,13 @@ function renderHoldings(){
     ? '按「更新今日報價」後才有'
     : (mkt ? ((chg>=0?'+':'−')+Math.abs(chg/(mkt-chg||1)*100).toFixed(2)+'%') : '');
   document.getElementById('hCost').textContent = money(cost);
+  var plNet = holdings.reduce(function(a,h){ return a + plOf(h); }, 0);
   var plEl = document.getElementById('hPL');
-  plEl.textContent = signed(pl);
-  plEl.className = 'v num ' + (pl>=0?'in':'out');
-  document.getElementById('hPLSub').textContent = cost ? ((pl>=0?'+':'−')+Math.abs(pl/cost*100).toFixed(1)+'%') : '';
+  plEl.textContent = signed(plNet);
+  plEl.className = 'v num ' + (plNet>=0?'in':'out');
+  document.getElementById('hPLSub').textContent =
+    (cost ? ((plNet>=0?'+':'−')+Math.abs(plNet/cost*100).toFixed(1)+'%') : '') +
+    (settings.plMode==='net' ? '　已扣賣出成本 '+money(totalSellCost()) : '　毛損益');
   var dv = divs.reduce(function(s,d){ return s+(Number(d.amount)||0); },0);
   document.getElementById('hDiv').textContent = dv ? ('配息 +'+money(dv)) : '';
   document.getElementById('hDivSub').textContent = cost ? ('殖利率（累計）'+(dv/cost*100).toFixed(1)+'%') : '';
@@ -2354,6 +2387,11 @@ function renderHoldings(){
   holdings.slice().sort(function(a,b){ return (b.shares*b.price)-(a.shares*a.price); }).forEach(function(h){
     var m = (Number(h.shares)||0)*(Number(h.price)||0);
     var p = m - (Number(h.cost)||0);
+    var pl2 = plOf(h);
+    var sc = sellCostOf(h);
+    var plTip = settings.plMode==='net'
+      ? ('毛損益 '+money(p)+' − 賣出成本 '+money(sc)+'（手續費＋'+(isETF(h)?'證交稅 0.1%':'證交稅 0.3%')+'）')
+      : ('毛損益。現在賣出的成本約 '+money(sc));
     var avg = h.shares ? (Number(h.cost)||0)/h.shares : 0;
     t += '<tr><td><b>'+esc(h.symbol)+'</b></td><td>'+esc(h.name||'')+'</td><td>'+esc(h.type)+'</td>'+
       '<td class="n">'+money(h.shares)+'</td>'+
@@ -2362,7 +2400,7 @@ function renderHoldings(){
       '<td class="n '+(h.chg==null||h.chg===''?'':Number(h.chg)>=0?'in':'out')+'">'+
         (h.chg==null||h.chg===''? '—' : (Number(h.chg)>=0?'+':'−')+Math.abs(Number(h.chg)).toFixed(2))+'</td>'+
       '<td class="n">'+money(m)+'</td>'+
-      '<td class="n '+(p>=0?'in':'out')+'">'+signed(p)+'</td>'+
+      '<td class="n '+(pl2>=0?'in':'out')+'" title="'+esc(plTip)+'">'+signed(pl2)+'</td>'+
       '<td style="white-space:nowrap;"><button class="rowbtn" data-sellh="'+h.id+'">賣出</button> '+
       '<button class="rowbtn" data-edith="'+h.id+'">編輯</button></td></tr>';
   });
@@ -2377,6 +2415,14 @@ function renderHoldings(){
       openSellModal(holdings.filter(function(h){ return h.id===b.getAttribute('data-sellh'); })[0]);
     });
   });
+
+  var pmh = document.getElementById('plModeHint');
+  if(pmh){
+    pmh.innerHTML = settings.plMode === 'net'
+      ? '損益是<b>參考損益</b>：已扣掉現在賣出要付的手續費（'+((Number(settings.feeDiscount)||1)*10).toFixed(1).replace(/\.0$/,'')+
+        ' 折，最低 20 元）與證交稅，跟券商 App 同一個口徑。要看毛損益可以到設定切換。'
+      : '損益是<b>毛損益</b>：市值減成本，<b>沒有</b>扣賣出手續費與證交稅，所以會比券商 App 顯示的數字大一點。';
+  }
 
   /* 資產配置：現金／各類投資，一條堆疊條，直接標值 */
   var parts = [];
@@ -2504,7 +2550,7 @@ function openSellModal(h){
     '<div class="field"><label for="slPrice">成交價</label>'+
     '<input id="slPrice" type="text" inputmode="decimal" value="'+Number(h.price).toFixed(2)+'"></div></div>'+
     '<div class="field2"><div class="field"><label for="slFee">手續費與稅</label>'+
-    '<input id="slFee" type="text" inputmode="decimal" placeholder="0"></div>'+
+    '<input id="slFee" type="text" inputmode="decimal" value="'+sellCostOf(h)+'"></div>'+
     '<div class="field"><label for="slDate">日期</label>'+
     '<input id="slDate" type="date" value="'+todayStr()+'"></div></div>'+
     '<div class="field"><label><input type="checkbox" id="slTx" checked> 把賣得的錢存進帳戶</label></div>'+
@@ -3094,6 +3140,16 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
           '" data-lf="'+f.id+'" style="font-family:'+f.stack+'; font-size:19px; padding:4px 16px;">'+f.name+'</button>';
       }).join('')+'</div>'+
       '<p class="hint" id="setLogoNote"></p></div>'+
+    '<div class="field"><label>持股損益口徑</label>'+
+      '<div class="seg" id="setPlMode">'+
+      '<button data-pl="net"'+((settings.plMode||'net')==='net'?' class="on"':'')+'>參考損益</button>'+
+      '<button data-pl="gross"'+((settings.plMode||'net')==='gross'?' class="on"':'')+'>毛損益</button></div>'+
+      '<div class="rowline" style="margin-top:10px;">'+
+      '<label for="setFeeD" style="margin:0; font-size:13.5px;">手續費折扣</label>'+
+      '<input id="setFeeD" type="text" inputmode="decimal" style="width:90px;" value="'+esc(settings.feeDiscount)+'">'+
+      '<span class="dim" style="font-size:13px;">1＝無折扣、0.6＝六折、0.28＝2.8折</span></div>'+
+      '<p class="hint"><b>參考損益</b>＝市值 − 成本 − 賣出成本（手續費 0.1425%×折扣，最低 20 元；'+
+      '證交稅 ETF 0.1%、個股 0.3%），跟券商 App 同一個口徑。<b>毛損益</b>不扣賣出成本，數字會比券商大一點。</p></div>'+
     '<div class="field"><label>外觀</label><div class="seg" id="setTheme">'+
       ['auto','light','dark'].map(function(t){
         return '<button data-t="'+t+'"'+((settings.theme||'auto')===t?' class="on"':'')+'>'+
@@ -3124,6 +3180,14 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
     '<div class="modal-actions"><button class="btn-secondary" id="setClose">關閉</button>'+
     '<button class="btn-primary" id="setSave">儲存</button></div>';
   openModal('genBackdrop','genModal', h, function(){
+    var plMode = settings.plMode || 'net';
+    Array.prototype.forEach.call(document.querySelectorAll('#setPlMode button'), function(bt){
+      bt.addEventListener('click', function(){
+        plMode = bt.getAttribute('data-pl');
+        Array.prototype.forEach.call(document.querySelectorAll('#setPlMode button'), function(x){ x.classList.remove('on'); });
+        bt.classList.add('on');
+      });
+    });
     var pickedFont = settings.logoFont || 'pacifico';
     function paintLogoNote(){
       for(var i=0;i<LOGO_FONTS.length;i++) if(LOGO_FONTS[i].id===pickedFont){
@@ -3200,6 +3264,9 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
     document.getElementById('setAddIn').addEventListener('click', function(){ addCat('in'); });
     document.getElementById('setClose').addEventListener('click', function(){ closeModal('genBackdrop'); });
     document.getElementById('setSave').addEventListener('click', function(){
+      settings.plMode = plMode;
+      var fd = Number(String(document.getElementById('setFeeD').value).replace(/[^0-9.]/g,''));
+      settings.feeDiscount = (fd > 0 && fd <= 1) ? fd : 1;
       settings.logoFont = pickedFont;
       settings.theme = theme;
       settings.buddyOn = document.getElementById('setBuddy').checked;
