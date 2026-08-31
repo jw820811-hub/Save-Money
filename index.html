@@ -595,6 +595,10 @@
   .sdot.err{background:var(--danger);}
   .sdot.off{background:var(--line-soft); border:1.5px solid var(--neutral);}
 
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+  .sdot.live{animation:pulse 2.2s ease-in-out infinite;}
+  @media (prefers-reduced-motion: reduce){ .sdot.live{animation:none;} }
+
 </style>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;600;700;800;900&family=Noto+Sans+TC:wght@500;700;900&family=Pacifico&family=Kaushan+Script&family=Dancing+Script:wght@700&family=Great+Vibes&family=Sacramento&display=swap">
@@ -3746,7 +3750,7 @@ handleQuickAdd();
    規則限定只有登入者本人讀得到自己 uid 底下的文件。
    ========================================================================== */
 var FB_SDK = 'https://cdn.jsdelivr.net/npm/firebase@10.12.2/';
-var fb = {app:null, auth:null, db:null, user:null, ready:false, loading:false};
+var fb = {app:null, auth:null, db:null, user:null, ready:false, loading:false, unsub:null, lastSynced:null};
 
 function syncCfg(){ return read('wm.fbConfig', null); }
 function syncEnabled(){ var c = syncCfg(); return !!(c && c.apiKey && c.projectId); }
@@ -3784,7 +3788,8 @@ function initFirebase(){
       fb.auth.onAuthStateChanged(function(u){
         fb.user = u || null;
         renderSyncBadge();
-        if(u) syncPull(true);          // 一登入就先把雲端的拉下來
+        if(fb.unsub){ fb.unsub(); fb.unsub = null; }
+        if(u) syncPull(true).then(startLive);   // 先拉一次，再掛上即時監聽
       });
       return fb;
     })
@@ -3876,6 +3881,7 @@ function syncPull(silent){
     }
     var before = txs.length;
     applyMerged(mergeWith(remote));
+    fb.lastSynced = JSON.stringify(localSnapshot());
     setSyncState({lastPull:new Date().toISOString(), err:''});
     renderAll();
     if(!silent) showToast('已從雲端取回並合併。', 'ok');
@@ -3902,6 +3908,7 @@ function syncPush(silent){
       at: new Date().toISOString(),
       device: navigator.userAgent.slice(0, 120)
     }).then(function(){
+      fb.lastSynced = JSON.stringify(localSnapshot());
       setSyncState({lastPush:new Date().toISOString(), err:''});
       renderAll();
       if(!silent) showToast('已同步到雲端。', 'ok');
@@ -3912,12 +3919,44 @@ function syncPush(silent){
   });
 }
 
-/* 有變動就排一次推送，但要等使用者停手——連續記三筆不該推三次 */
+/* 即時監聽：另一台裝置一存，這台馬上收到。
+   第一版只在「頁面載入時」拉一次，分頁一直開著就永遠不知道雲端有新資料——
+   使用者在手機記了帳、電腦沒反應，就是這個原因。
+   要小心兩件事才不會無限迴圈：
+     · hasPendingWrites 代表是自己剛寫的，跳過；
+     · 收下來合併之後如果內容跟本來一樣，就什麼都不做。 */
+function startLive(){
+  if(!fb || !fb.ready || !fb.user) return;
+  if(fb.unsub){ fb.unsub(); fb.unsub = null; }
+  try{
+    fb.unsub = docRef().onSnapshot(function(snap){
+      if(!snap.exists) return;
+      if(snap.metadata && snap.metadata.hasPendingWrites) return;
+      var remote = snap.data();
+      if(remote && typeof remote.blob === 'string'){
+        try{ remote = JSON.parse(remote.blob); }catch(e){ return; }
+      }
+      var before = JSON.stringify(localSnapshot());
+      applyMerged(mergeWith(remote));
+      var after = JSON.stringify(localSnapshot());
+      if(after === before) return;                    // 沒有新東西
+      fb.lastSynced = after;
+      setSyncState({lastPull:new Date().toISOString(), err:''});
+      renderAll();
+      showToast('收到另一台裝置的更新。','ok');
+    }, function(err){
+      setSyncState({err:'即時同步中斷：'+String(err && err.message || err)});
+    });
+    renderSyncBadge();
+  }catch(e){ setSyncState({err:String(e && e.message || e)}); }
+}
+
+/* 有變動就排一次推送，但要等使用者停手——連續記三筆不該推三次。
+   內容跟上次同步的一樣就不推：這是即時監聽不會跟自己打架的關鍵。 */
 var pushTimer = null;
-/* renderAll() 在同步模組載入之前就會跑第一次，那時 fb 還是 undefined，
-   所以每個對外的入口都要先確認它存在。 */
 function syncSoon(){
   if(!fb || !fb.ready || !fb.user) return;
+  if(JSON.stringify(localSnapshot()) === fb.lastSynced) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(function(){ syncPush(true); }, 2500);
 }
@@ -3937,6 +3976,7 @@ function signIn(){
 }
 function signOut(){
   if(!fb || !fb.ready) return;
+  if(fb.unsub){ fb.unsub(); fb.unsub = null; }
   fb.auth.signOut().then(function(){ renderSyncBadge(); showToast('已登出。本機資料還在。','ok'); });
 }
 
@@ -3948,8 +3988,9 @@ function renderSyncBadge(){
   var st = syncState();
   if(fb && fb.user){
     var t = st.lastPush || st.lastPull;
-    el.innerHTML = '<span class="sdot on"></span>' + esc((fb.user.email||'已登入').split('@')[0]) +
-      (t ? '　'+t.slice(11,16) : '');
+    el.innerHTML = '<span class="sdot on'+(fb.unsub?' live':'')+'"></span>' +
+      esc((fb.user.email||'已登入').split('@')[0]) +
+      (fb.unsub ? '　即時同步中' : (t ? '　'+t.slice(11,16) : ''));
   } else if(st.err){
     el.innerHTML = '<span class="sdot err"></span>同步有問題';
   } else {
