@@ -2562,38 +2562,82 @@ function openSellModal(h){
    會擋掉執行期的 fetch，所以這個功能實際上只有自架版能用。
    美股與基金抓不到，維持手動輸入。
    ========================================================================== */
-var QUOTE_SOURCES = [
-  {name:'證交所（上市）', urls:[
-     'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
-   ],
+/* ==========================================================================
+   台股報價
+   --------------------------------------------------------------------------
+   第一版直接抓證交所的 STOCK_DAY_ALL：那支 API 一次回傳全台上市股票，
+   將近 2 MB。使用者實測回報「逾時」而不是「連線被拒」——CORS 被擋是瞬間失敗，
+   會等到逾時就代表請求送出去了、只是對方太慢，走中繼站再轉一手更慢。
+   所以改成優先用「只查指定代號」的 MIS 端點，回傳量從 2 MB 降到幾 KB。
+   四種策略依序試，第一個抓到東西的就贏：
+     1. MIS 直連          — 幾 KB，最快，但這支通常沒開 CORS
+     2. MIS 走中繼站      — 量小，中繼站轉得動
+     3. OpenAPI 直連      — 量大但有開 CORS，逾時放寬到 30 秒
+     4. OpenAPI 走中繼站  — 最後手段，45 秒
+   ========================================================================== */
+var QUOTE_PROXY = function(u){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); };
+
+function numOf(v){
+  if(v == null) return null;
+  var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+  return isFinite(n) ? n : null;
+}
+
+/* --- 策略 1、2：MIS 逐檔查詢 --- */
+function misUrl(symbols){
+  var ch = [];
+  symbols.forEach(function(sym){
+    ch.push('tse_'+sym+'.tw');   // 上市
+    ch.push('otc_'+sym+'.tw');   // 上櫃：不知道在哪個市場，兩個都問，沒有的那個不會回
+  });
+  return 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?json=1&delay=0&_='+Date.now()+
+         '&ex_ch='+encodeURIComponent(ch.join('|'));
+}
+function misParse(data){
+  var map = {};
+  var arr = data && data.msgArray;
+  if(!Array.isArray(arr)) return map;
+  arr.forEach(function(m){
+    var code = String(m.c||'').trim();
+    if(!code) return;
+    var y = numOf(m.y);                       // 昨收
+    var z = numOf(m.z);                       // 成交價
+    if(z == null && m.b) z = numOf(String(m.b).split('_')[0]);   // 沒成交就用最佳買價
+    if(z == null) z = y;                      // 都沒有就用昨收，至少不是亂數
+    if(z == null || z <= 0) return;
+    map[code] = {price:z, chg:(y != null ? Math.round((z-y)*100)/100 : null)};
+  });
+  return map;
+}
+
+/* --- 策略 3、4：OpenAPI 全市場檔 --- */
+var BULK_SOURCES = [
+  {name:'證交所', url:'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
    code:function(r){ return r.Code || r.code; },
    price:function(r){ return r.ClosingPrice || r.closingPrice; },
    chg:function(r){ return r.Change || r.change; }},
-  {name:'櫃買中心（上櫃）', urls:[
-     'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
-     'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes'
-   ],
+  {name:'櫃買中心', url:'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
    code:function(r){ return r.SecuritiesCompanyCode || r.Code || r.code; },
    price:function(r){ return r.Close || r.ClosingPrice || r.close; },
    chg:function(r){ return r.Change || r.change; }}
 ];
-/* 直連失敗時的中繼站。傳的是公開的收盤價，沒有任何個人資料或金鑰，
-   但畢竟是第三方，所以會在訊息裡明講是走中繼站抓到的。 */
-var QUOTE_PROXIES = [
-  function(u){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
-];
 
-/* 環境判斷：三種情況的解法完全不同，不講清楚使用者只會一直按同一個按鈕。 */
 function quoteEnv(){
   if(window.claude && typeof window.claude.use === 'function') return 'artifact';
   if(location.protocol === 'file:') return 'file';
   if(location.protocol === 'http:' || location.protocol === 'https:') return 'web';
   return 'other';
 }
-function numOf(v){
-  if(v == null) return null;
-  var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
-  return isFinite(n) ? n : null;
+function fetchWithTimeout(url, ms){
+  if(typeof AbortController === 'undefined') return fetch(url, {cache:'no-store'});
+  var ctl = new AbortController();
+  var timer = setTimeout(function(){ ctl.abort(); }, ms);
+  return fetch(url, {cache:'no-store', signal:ctl.signal})
+    .then(function(r){ clearTimeout(timer); return r; })
+    .catch(function(e){
+      clearTimeout(timer);
+      throw (e && e.name === 'AbortError') ? new Error('逾時 '+Math.round(ms/1000)+'s') : e;
+    });
 }
 function showQuoteMsg(text, kind){
   var el = document.getElementById('quoteMsg');
@@ -2601,89 +2645,85 @@ function showQuoteMsg(text, kind){
   el.className = 'modal-hint' + (kind ? ' '+kind : '');
   el.hidden = false;
 }
-/* fetch 本身沒有逾時。中繼站慢或不回應時，promise 會永遠掛著，
-   訊息就卡在「重試中」、按鈕也解不開——這是第一版真正的 bug。 */
-function fetchWithTimeout(url, ms){
-  if(typeof AbortController === 'undefined'){
-    return fetch(url, {cache:'no-store'});   // 舊瀏覽器：至少不要壞掉
-  }
-  var ctl = new AbortController();
-  var timer = setTimeout(function(){ ctl.abort(); }, ms);
-  return fetch(url, {cache:'no-store', signal:ctl.signal})
-    .then(function(r){ clearTimeout(timer); return r; })
-    .catch(function(e){
-      clearTimeout(timer);
-      throw (e && e.name === 'AbortError') ? new Error('逾時 '+Math.round(ms/1000)+' 秒') : e;
-    });
-}
-/* 依序試：每個來源的每個候選網址先直連，全部失敗才走中繼站。 */
-function fetchQuoteSource(src, useProxy, onStep){
-  var attempts = [];
-  src.urls.forEach(function(u){
-    attempts.push({url:u, via:'直連'});
-    if(useProxy) QUOTE_PROXIES.forEach(function(mk, i){
-      attempts.push({url:mk(u), via:'中繼站'+(i+1)});
-    });
+
+function buildStrategies(symbols){
+  var list = [];
+  list.push({label:'即時報價 直連', timeout:12000,
+    run:function(){ return fetchWithTimeout(misUrl(symbols),12000).then(rj).then(misParse); }});
+  list.push({label:'即時報價 中繼站', timeout:20000,
+    run:function(){ return fetchWithTimeout(QUOTE_PROXY(misUrl(symbols)),20000).then(rj).then(misParse); }});
+  BULK_SOURCES.forEach(function(src){
+    list.push({label:src.name+' 收盤檔 直連', timeout:30000,
+      run:function(){ return fetchWithTimeout(src.url,30000).then(rj).then(function(j){ return bulkParse(src,j); }); }});
   });
-  var lastErr = null;
-  function step(i){
-    if(i >= attempts.length) return Promise.resolve({src:src, list:[], err:lastErr||new Error('全部失敗')});
-    var a = attempts[i];
-    if(onStep) onStep(src.name, a.via, i+1, attempts.length);
-    /* 中繼站要轉送上百 KB 的資料，給它久一點；直連不該等超過 12 秒 */
-    return fetchWithTimeout(a.url, a.via === '直連' ? 10000 : 15000)
-      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
-      .then(function(list){
-        if(!Array.isArray(list) || !list.length) throw new Error('回傳格式不對');
-        return {src:src, list:list, via:a.via};
-      })
-      .catch(function(e){ lastErr = e; return step(i+1); });
-  }
-  return step(0);
+  BULK_SOURCES.forEach(function(src){
+    list.push({label:src.name+' 收盤檔 中繼站', timeout:45000,
+      run:function(){ return fetchWithTimeout(QUOTE_PROXY(src.url),45000).then(rj).then(function(j){ return bulkParse(src,j); }); }});
+  });
+  return list;
 }
-function runQuoteUpdate(useProxy){
+function rj(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+function bulkParse(src, list){
+  var map = {};
+  if(!Array.isArray(list)) return map;
+  list.forEach(function(row){
+    var code = String(src.code(row)||'').trim();
+    if(!code) return;
+    var p = numOf(src.price(row));
+    if(p == null || p <= 0) return;
+    map[code] = {price:p, chg:numOf(src.chg(row))};
+  });
+  return map;
+}
+
+function runQuoteUpdate(){
   var btn = document.getElementById('quoteBtn');
   var env = quoteEnv();
+  if(!holdings.length){ showQuoteMsg('還沒有持股。',''); return; }
   var targets = holdings.filter(function(h){ return /^[0-9]{4,6}[A-Z]?$/.test(String(h.symbol).trim()); });
-  if(!holdings.length){ showQuoteMsg('還沒有持股。', ''); return; }
   if(!targets.length){
-    showQuoteMsg('沒有台股代號可以更新。美股與基金的報價這個網頁抓不到，請手動輸入。', 'warn');
-    return;
+    showQuoteMsg('沒有台股代號可以更新。美股與基金的報價這個網頁抓不到，請手動輸入。','warn'); return;
   }
-  /* Artifact 版與 file:// 是「一定會失敗」的環境，瀏覽器連請求都不會送出去。
-     還去試逾時只是讓使用者盯著轉圈 44 秒，不如立刻講清楚。 */
   if(env === 'artifact' || env === 'file'){
     showQuoteMsg(
       (env === 'artifact'
         ? '你現在開的是 <b>Artifact 版</b>（claude.ai 上的網址）。這個版本的安全政策直接禁止網頁對外連線，'+
           '<b>連請求都送不出去，再按幾次都一樣</b>。'
         : '你現在是<b>直接打開電腦裡的檔案</b>（網址列開頭是 file://）。瀏覽器不允許本機檔案對外抓資料。')+
-      '<br>把 <b>index.html</b> 傳上 GitHub Pages 或 Netlify，用 https 的網址開，這個按鈕才會真的去抓報價。', '');
+      '<br>把 <b>index.html</b> 傳上 GitHub Pages 或 Netlify，用 https 的網址開，這個按鈕才會真的去抓報價。','');
     return;
   }
-  btn.disabled = true;
-  var progress = {};
-  function paintProgress(){
-    var parts = QUOTE_SOURCES.map(function(sc){ return sc.name+'：'+(progress[sc.name]||'等待中'); });
-    showQuoteMsg((useProxy ? '直連失敗，改用中繼站重試中…<br>' : '連線中…（當日收盤價）<br>')+
-      '<span style="opacity:.75">'+parts.join('　')+'</span>', 'ok');
-  }
-  paintProgress();
-  function onStep(name, via, i, n){ progress[name] = via+' ('+i+'/'+n+')'; paintProgress(); }
 
-  Promise.all(QUOTE_SOURCES.map(function(src){ return fetchQuoteSource(src, useProxy, onStep); }))
-   .then(function(results){
-    var map = {}, vias = [];
-    results.forEach(function(res){
-      if(res.via) vias.push(res.src.name+'（'+res.via+'）');
-      res.list.forEach(function(row){
-        var code = String(res.src.code(row) || '').trim();
-        if(!code) return;
-        var p = numOf(res.src.price(row));
-        if(p == null || p <= 0) return;
-        map[code] = {price:p, chg:numOf(res.src.chg(row))};
-      });
+  var symbols = targets.map(function(h){ return String(h.symbol).trim(); });
+  var strategies = buildStrategies(symbols);
+  var tried = [];
+  btn.disabled = true;
+
+  function attempt(i){
+    if(i >= strategies.length){ finish(null, null); return; }
+    var st = strategies[i];
+    showQuoteMsg('第 '+(i+1)+'/'+strategies.length+' 種方式：<b>'+st.label+'</b>…（最多等 '+
+      Math.round(st.timeout/1000)+' 秒）'+
+      (tried.length ? '<br><span style="opacity:.7">已試過：'+esc(tried.join('　'))+'</span>' : ''), 'ok');
+    st.run().then(function(map){
+      var hit = symbols.filter(function(sym){ return map[sym]; }).length;
+      if(!hit) throw new Error('查無資料');
+      finish(map, st.label);
+    }).catch(function(e){
+      tried.push(st.label+'✗'+(e && e.message ? '('+e.message+')' : ''));
+      attempt(i+1);
     });
+  }
+  function finish(map, label){
+    btn.disabled = false;
+    if(!map){
+      showQuoteMsg('你現在開的是<b>已上線的網站版</b>（'+location.hostname+'），環境是對的，'+
+        '但 '+strategies.length+' 種取得報價的方式全部失敗。<br>'+
+        '證交所的 API 是政府網站，尖峰時段本來就慢；先過一陣子再按一次。'+
+        '一直不行的話，把下面這行給我，我換資料來源。<br>'+
+        '<span style="opacity:.75">'+esc(tried.join('　'))+'</span>', '');
+      return;
+    }
     var okCount = 0, miss = [];
     targets.forEach(function(h){
       var q = map[String(h.symbol).trim()];
@@ -2695,42 +2735,14 @@ function runQuoteUpdate(useProxy){
       okCount++;
     });
     if(okCount){ saveHoldings(); renderAll(); }
-    btn.disabled = false;
-    var failed = results.filter(function(r){ return r.err; });
-
-    if(okCount){
-      var msg = '已更新 '+okCount+' 檔的收盤價（'+todayStr()+'）。來源：'+vias.join('、')+'。';
-      if(miss.length) msg += ' 查不到：'+miss.join('、')+'（可能是興櫃、已下市，或代號打錯）。';
-      showQuoteMsg(msg, 'ok');
-      showToast('報價已更新。','ok');
-      return;
-    }
-    /* 全部失敗：先自動用中繼站再試一次，還是不行才報告 */
-    if(!useProxy){ runQuoteUpdate(true); return; }
-
-    var detail = failed.map(function(f){ return f.src.name+'：'+(f.err && f.err.message || '連線失敗'); }).join('　');
-    var where, how;
-    if(env === 'artifact'){
-      where = '你現在開的是 <b>Artifact 版</b>（claude.ai 上的網址）。';
-      how = '這個版本的安全政策直接禁止對外連線，<b>再按幾次都不會成功</b>。把自架版傳上 GitHub Pages 或 Netlify，在那個網址上按才有用。';
-    } else if(env === 'file'){
-      where = '你現在是<b>直接打開電腦裡的檔案</b>（網址列開頭是 file://）。';
-      how = '瀏覽器不允許本機檔案對外抓資料。<b>把檔案傳上 GitHub Pages 或 Netlify</b>，用 https 的網址開，才會成功。';
-    } else {
-      where = '你現在開的是<b>已上線的網站版</b>（'+location.hostname+'），環境是對的。';
-      how = '直連與中繼站都失敗了，代表是對方站台的問題：可能暫時維修、或網址改了。' +
-            '過一小時再試一次；還是不行的話把這行錯誤訊息給我，我換來源。';
-    }
-    showQuoteMsg(where+'<br>'+how+'<br><span style="opacity:.75">錯誤：'+esc(detail)+'</span>', '');
-  })
-  .catch(function(e){
-    /* 不該走到這裡，但萬一有預期外的例外，按鈕一定要放開，
-       否則使用者只能重整頁面。 */
-    btn.disabled = false;
-    showQuoteMsg('更新過程出錯了：'+esc(e && e.message || e)+'。請再按一次；一直失敗的話把這行給我。', '');
-  });
+    var msg = '已更新 <b>'+okCount+'</b> 檔（'+todayStr()+'，來源：'+esc(label)+'）。';
+    if(miss.length) msg += ' 查不到：'+esc(miss.join('、'))+'（可能是興櫃、已下市，或代號打錯）。';
+    showQuoteMsg(msg, 'ok');
+    if(okCount) showToast('報價已更新。','ok');
+  }
+  attempt(0);
 }
-document.getElementById('quoteBtn').addEventListener('click', function(){ runQuoteUpdate(false); });
+document.getElementById('quoteBtn').addEventListener('click', function(){ runQuoteUpdate(); });
 
 /* ==========================================================================
    淨值與負債
