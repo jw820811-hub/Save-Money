@@ -583,6 +583,18 @@
   }
   .qabanner .qaacts{display:flex; gap:8px; width:100%;}
 
+  /* ============ 雲端同步狀態 ============ */
+  .syncbadge{
+    display:flex; align-items:center; gap:8px; width:100%; background:none; border:none;
+    padding:6px 4px 10px; font-size:12.5px; font-weight:800; color:var(--muted);
+    font-family:inherit; text-align:left;
+  }
+  .syncbadge:hover{color:var(--ink);}
+  .sdot{width:9px; height:9px; border-radius:50%; flex-shrink:0; background:var(--neutral);}
+  .sdot.on{background:var(--ok);}
+  .sdot.err{background:var(--danger);}
+  .sdot.off{background:var(--line-soft); border:1.5px solid var(--neutral);}
+
 </style>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;600;700;800;900&family=Noto+Sans+TC:wght@500;700;900&family=Pacifico&family=Kaushan+Script&family=Dancing+Script:wght@700&family=Great+Vibes&family=Sacramento&display=swap">
@@ -612,6 +624,7 @@
     <button class="railbtn" id="nav-reports"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V9M10 20V4M16 20v-7M22 20H2"/></svg>報表</button>
   </nav>
   <div class="rail-foot">
+    <button class="syncbadge" id="syncBadge"></button>
     <button class="btn-ghost" id="settingsBtn" style="margin-bottom:8px;">⚙ 設定</button>
     <button class="btn-ghost" id="backupBtn">⤓ 資料備份</button>
   </div>
@@ -1103,16 +1116,16 @@ if(settings.catsVersion !== 2){
   write(LS.cats, cats); write(LS.set, settings);
 }
 
-function saveAccounts(){ write(LS.acc, accounts); }
-function saveTx(){ write(LS.tx, txs); }
-function saveCats(){ write(LS.cats, cats); }
-function saveRecurs(){ write(LS.recur, recurs); }
-function saveBudgets(){ write(LS.budgets, budgets); }
-function saveGoals(){ write(LS.goals, goals); }
-function saveHoldings(){ write(LS.holds, holdings); }
-function saveDivs(){ write(LS.divs, divs); }
-function saveDebts(){ write(LS.debts, debts); }
-function saveSnaps(){ write(LS.snaps, snaps); }
+function saveAccounts(){ write(LS.acc, accounts);  touchLocal(); }
+function saveTx(){ write(LS.tx, txs);  touchLocal(); }
+function saveCats(){ write(LS.cats, cats);  touchLocal(); }
+function saveRecurs(){ write(LS.recur, recurs);  touchLocal(); }
+function saveBudgets(){ write(LS.budgets, budgets);  touchLocal(); }
+function saveGoals(){ write(LS.goals, goals);  touchLocal(); }
+function saveHoldings(){ write(LS.holds, holdings);  touchLocal(); }
+function saveDivs(){ write(LS.divs, divs);  touchLocal(); }
+function saveDebts(){ write(LS.debts, debts);  touchLocal(); }
+function saveSnaps(){ write(LS.snaps, snaps);  touchLocal(); }
 function saveSettings(){ write(LS.set, settings); }
 
 /* ---- 小工具 ---- */
@@ -1353,6 +1366,29 @@ function avgMonthlyExpense(n){
 /* ==========================================================================
    導覽
    ========================================================================== */
+/* ==========================================================================
+   同步用的共同欄位
+   --------------------------------------------------------------------------
+   合併兩台裝置的資料時，靠的是每筆紀錄的 id 與 updatedAt：同一個 id 留較新的。
+   刪除比較麻煩——A 手機刪掉的紀錄，如果 B 電腦上還有，合併時會「復活」。
+   所以刪除要留墓碑（tombstone）：記下 id 與刪除時間，比紀錄還新就代表真的被刪了。
+   ========================================================================== */
+var tombs = read('wm.tombs', []);
+function saveTombs(){ write('wm.tombs', tombs); }
+function stamp(o){ o.updatedAt = new Date().toISOString(); if(!o.createdAt) o.createdAt = o.updatedAt; return o; }
+function tomb(){
+  var ids = Array.prototype.slice.call(arguments);
+  var at = new Date().toISOString();
+  ids.forEach(function(id){ if(id) tombs.push({id:id, at:at}); });
+  /* 墓碑留半年就夠了——比這更舊的紀錄不可能還在另一台裝置上等著復活 */
+  var cut = new Date(Date.now() - 180*86400000).toISOString();
+  tombs = tombs.filter(function(t){ return t.at > cut; });
+  saveTombs();
+  touchLocal();
+}
+/* 本機最後一次改動的時間，用來判斷要不要推上雲端 */
+function touchLocal(){ write('wm.localAt', new Date().toISOString()); }
+
 var navState = read(LS.nav, null) || {primary:'home', sub:'list', sub2:'holdings'};
 var PAGE_TITLE = {home:'總覽', ledger:'帳本', accounts:'帳戶', budget:'預算', goals:'儲蓄目標', invest:'投資與淨值', reports:'報表'};
 var SUB_TITLE = {list:'收支明細', recur:'週期性項目'};
@@ -1505,6 +1541,7 @@ function renderTxModal(){
     var del = document.getElementById('txDelete');
     if(del) del.addEventListener('click', function(){
       askConfirm({title:'刪除紀錄', danger:true, ok:'刪除', body:'這筆紀錄會永久刪除，帳戶餘額會跟著調整。'}, function(){
+        tomb(txDraft.id);
         txs = txs.filter(function(t){ return t.id !== txDraft.id; });
         saveTx(); closeModal('txBackdrop'); renderAll(); showToast('已刪除。','ok');
       });
@@ -1778,6 +1815,7 @@ function openRecurModal(r, defaultKind){
       var obj = {id:r.id||uid('rc'), name:v('rName').trim(), kind:v('rKind'), amount:amt,
         cat:v('rCat'), accId:v('rAcc'), freq:v('rFreq'), start:v('rStart'),
         day:parseYMD(v('rStart')).getDate(), end:v('rEnd'), lastDate:r.lastDate||''};
+      stamp(obj);
       if(r.id) recurs = recurs.map(function(x){ return x.id===obj.id?obj:x; });
       else recurs.push(obj);
       saveRecurs(); closeModal('genBackdrop'); renderAll(); showToast('已儲存。','ok');
@@ -1785,6 +1823,7 @@ function openRecurModal(r, defaultKind){
     var d = document.getElementById('rDel');
     if(d) d.addEventListener('click', function(){
       askConfirm({title:'刪除週期項目', danger:true, ok:'刪除', body:'只會刪掉這個排程，已經記進帳本的紀錄不受影響。'}, function(){
+        tomb(r.id);
         recurs = recurs.filter(function(x){ return x.id!==r.id; });
         saveRecurs(); closeModal('genBackdrop'); renderAll(); showToast('已刪除。','ok');
       });
@@ -1846,6 +1885,7 @@ function openAccModal(a){
       if(!v('aName').trim()){ showToast('請填帳戶名稱。','err'); return; }
       var obj = {id:a.id||uid('acc'), name:v('aName').trim(), kind:v('aKind'),
                  opening:Math.round(Number(String(v('aOpen')).replace(/[, ]/g,''))||0), note:v('aNote').trim()};
+      stamp(obj);
       if(a.id) accounts = accounts.map(function(x){ return x.id===obj.id?obj:x; });
       else accounts.push(obj);
       saveAccounts(); closeModal('accBackdrop'); renderAll(); showToast('已儲存。','ok');
@@ -1855,6 +1895,7 @@ function openAccModal(a){
       var n = txs.filter(function(t){ return t.accId===a.id || t.toAccId===a.id; }).length;
       if(n){ showToast('這個帳戶還有 '+n+' 筆紀錄，先把它們改到別的帳戶或刪掉。','err', 7000); return; }
       askConfirm({title:'刪除帳戶', danger:true, ok:'刪除', body:'「'+a.name+'」會被移除。'}, function(){
+        tomb(a.id);
         accounts = accounts.filter(function(x){ return x.id!==a.id; });
         saveAccounts(); closeModal('accBackdrop'); renderAll(); showToast('已刪除。','ok');
       });
@@ -2165,6 +2206,7 @@ function openGoalModal(g){
       var obj = {id:g.id||uid('goal'), title:v('gTitle').trim(), target:t, due:v('gDue'),
                  note:v('gNote').trim(), color:chosen, log:g.log||[], done:g.done||false, doneAt:g.doneAt||''};
       if(obj.done && goalSaved(obj) < t) obj.done = false;
+      stamp(obj);
       if(g.id) goals = goals.map(function(x){ return x.id===obj.id?obj:x; });
       else goals.push(obj);
       saveGoals(); closeModal('goalBackdrop'); renderAll(); showToast('已儲存。','ok');
@@ -2174,6 +2216,7 @@ function openGoalModal(g){
     if(d) d.addEventListener('click', function(){
       askConfirm({title:'刪除目標', danger:true, ok:'刪除',
         body:'「'+g.title+'」及其存入紀錄會被移除。由收入撥入的標記也會一併清掉，但收入紀錄本身不受影響。'}, function(){
+        tomb(g.id);
         goals = goals.filter(function(x){ return x.id!==g.id; });
         txs.forEach(function(t){ if(t.goalId===g.id){ t.goalId=''; t.goalAmt=0; } });
         saveGoals(); saveTx(); closeModal('goalBackdrop'); renderAll(); showToast('已刪除。','ok');
@@ -2468,6 +2511,7 @@ function renderHoldings(){
   document.getElementById('divCount').textContent = divs.length ? divs.length+' 筆' : '';
   Array.prototype.forEach.call(document.querySelectorAll('[data-deldiv]'), function(b){
     b.addEventListener('click', function(){
+      tomb(b.getAttribute('data-deldiv'));
       divs = divs.filter(function(d){ return d.id!==b.getAttribute('data-deldiv'); });
       saveDivs(); renderAll(); showToast('已刪除配息紀錄。','ok');
     });
@@ -2527,6 +2571,7 @@ function openHoldModal(h){
       var obj = {id:h.id||uid('hd'), symbol:v('hfSym').trim().toUpperCase(), name:v('hfName').trim(),
         type:v('hfType'), shares:num('hfShares'), cost:num('hfCost'), price:num('hfPrice'), updated:v('hfUpd'),
         chg:h.chg==null?'':h.chg};
+      stamp(obj);
       if(h.id) holdings = holdings.map(function(x){ return x.id===obj.id?obj:x; });
       else holdings.push(obj);
       if(isNew && src === 'buy'){
@@ -2545,6 +2590,7 @@ function openHoldModal(h){
     var d = document.getElementById('hfDel');
     if(d) d.addEventListener('click', function(){
       askConfirm({title:'刪除持股', danger:true, ok:'刪除', body:'「'+h.symbol+'」會被移除，相關配息紀錄會保留但失去標的名稱。'}, function(){
+        tomb(h.id);
         holdings = holdings.filter(function(x){ return x.id!==h.id; });
         saveHoldings(); closeModal('genBackdrop'); renderAll(); showToast('已刪除。','ok');
       });
@@ -2597,6 +2643,7 @@ function openSellModal(h){
           '\n已實現損益 '+signed(realized)+
           (all ? '\n\n這會賣掉全部持股，這一檔會從持股清單移除（帳本紀錄會保留）。' : '')}, function(){
         if(all){
+          tomb(h.id);
           holdings = holdings.filter(function(x){ return x.id !== h.id; });
         } else {
           h.shares = (Number(h.shares)||0) - sh;
@@ -2829,6 +2876,7 @@ function renderNetworth(){
   document.getElementById('snapCount').textContent = snaps.length ? snaps.length+' 個月' : '';
   Array.prototype.forEach.call(document.querySelectorAll('[data-delsnap]'), function(b){
     b.addEventListener('click', function(){
+      tomb('snap-'+b.getAttribute('data-delsnap'));
       snaps = snaps.filter(function(s){ return s.ym!==b.getAttribute('data-delsnap'); });
       saveSnaps(); renderAll(); showToast('已刪除。','ok');
     });
@@ -2869,6 +2917,7 @@ function openDebtModal(d){
       if(!v('dName').trim()){ showToast('請填名稱。','err'); return; }
       var obj = {id:d.id||uid('db'), name:v('dName').trim(), balance:num('dBal'),
                  rate:num('dRate'), payment:num('dPay'), note:v('dNote').trim()};
+      stamp(obj);
       if(d.id) debts = debts.map(function(x){ return x.id===obj.id?obj:x; });
       else debts.push(obj);
       saveDebts(); closeModal('genBackdrop'); renderAll(); showToast('已儲存。','ok');
@@ -2876,6 +2925,7 @@ function openDebtModal(d){
     var del = document.getElementById('dDel');
     if(del) del.addEventListener('click', function(){
       askConfirm({title:'刪除負債', danger:true, ok:'刪除', body:'「'+d.name+'」會被移除。'}, function(){
+        tomb(d.id);
         debts = debts.filter(function(x){ return x.id!==d.id; });
         saveDebts(); closeModal('genBackdrop'); renderAll(); showToast('已刪除。','ok');
       });
@@ -3146,6 +3196,9 @@ Array.prototype.forEach.call(document.querySelectorAll('[data-fixgo]'), function
 /* ==========================================================================
    設定
    ========================================================================== */
+document.getElementById('syncBadge').addEventListener('click', function(){
+  document.getElementById('settingsBtn').click();
+});
 document.getElementById('settingsBtn').addEventListener('click', function(){
   var h = '<h2>設定</h2>'+
     '<div class="field"><label>標題字體（草寫）</label>'+
@@ -3157,6 +3210,8 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
           '" data-lf="'+f.id+'" style="font-family:'+f.stack+'; font-size:19px; padding:4px 16px;">'+f.name+'</button>';
       }).join('')+'</div>'+
       '<p class="hint" id="setLogoNote"></p></div>'+
+    '<div class="field"><label>雲端同步（電腦與手機共用同一份資料）</label>'+
+      '<div id="setSyncBox"></div></div>'+
     '<div class="field"><label>持股損益口徑</label>'+
       '<div class="seg" id="setPlMode">'+
       '<button data-pl="net"'+((settings.plMode||'net')==='net'?' class="on"':'')+'>參考損益</button>'+
@@ -3197,6 +3252,7 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
     '<div class="modal-actions"><button class="btn-secondary" id="setClose">關閉</button>'+
     '<button class="btn-primary" id="setSave">儲存</button></div>';
   openModal('genBackdrop','genModal', h, function(){
+    renderSyncSettings();
     var plMode = settings.plMode || 'net';
     Array.prototype.forEach.call(document.querySelectorAll('#setPlMode button'), function(bt){
       bt.addEventListener('click', function(){
@@ -3295,6 +3351,79 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
     });
   });
 });
+/* Firebase 主控台給的是一段 JS 物件，鍵沒有引號、後面還有分號，不是合法 JSON。
+   與其要求使用者手動整理，不如用正規式把需要的幾個欄位挑出來。 */
+function parseFbConfig(text){
+  var cfg = {};
+  ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].forEach(function(k){
+    var m = new RegExp(k+'\\s*:\\s*["\']([^"\']+)["\']').exec(text||'');
+    if(m) cfg[k] = m[1];
+  });
+  return (cfg.apiKey && cfg.projectId) ? cfg : null;
+}
+function renderSyncSettings(){
+  var box = document.getElementById('setSyncBox');
+  if(!box) return;
+  var cfg = syncCfg(), st = syncState();
+  var signedIn = !!(typeof fb !== 'undefined' && fb && fb.user);
+  var h = '';
+  if(!cfg){
+    h += '<p class="hint" style="margin-top:0;">到 Firebase 主控台 → 專案設定 → 你的應用程式，'+
+         '把 <code>firebaseConfig = { … }</code> 大括號裡那一整段貼進來。'+
+         '這段是設計成公開的，不是密碼——真正擋人的是「已授權網域」和登入身分。</p>'+
+         '<textarea id="setFbCfg" rows="6" placeholder=\'apiKey: "AIza…",\nauthDomain: "xxx.firebaseapp.com",\nprojectId: "xxx",\n…\'></textarea>'+
+         '<button class="btn-ghost" id="setFbSave" style="margin-top:8px;">儲存設定</button>';
+  } else {
+    h += '<p class="hint" style="margin-top:0;">專案：<b>'+esc(cfg.projectId)+'</b></p>';
+    if(signedIn){
+      h += '<div class="rowline" style="margin-bottom:8px;">'+
+           '<span class="tag" style="background:var(--ok-soft)">已登入 '+esc(fb.user.email||'')+'</span></div>'+
+           '<div class="rowline">'+
+           '<button class="btn-ghost" id="setPull">⤓ 立即取回</button>'+
+           '<button class="btn-ghost" id="setPush">⤒ 立即上傳</button>'+
+           '<button class="btn-ghost" id="setOut">登出</button></div>';
+    } else {
+      h += '<button class="btn-primary" id="setIn" style="width:100%;">用 Google 登入</button>';
+    }
+    h += '<p class="hint">'+
+      (st.lastPull ? '最後取回 '+st.lastPull.slice(0,16).replace('T',' ') : '尚未取回')+'　'+
+      (st.lastPush ? '最後上傳 '+st.lastPush.slice(0,16).replace('T',' ') : '尚未上傳')+
+      (st.err ? '<br><span style="color:var(--danger)">'+esc(st.err)+'</span>' : '')+
+      '<br>登入後每次改動會在停手幾秒後自動上傳；上傳前一定先取回合併，'+
+      '所以另一台裝置剛記的帳不會被蓋掉。</p>'+
+      '<button class="danger-link" id="setFbClear">清除 Firebase 設定</button>';
+  }
+  box.innerHTML = h;
+
+  var el;
+  if((el = document.getElementById('setFbSave'))) el.addEventListener('click', function(){
+    var cfg2 = parseFbConfig(document.getElementById('setFbCfg').value);
+    if(!cfg2){ showToast('看不出 apiKey 與 projectId，請把整段設定貼進來。','err',7000); return; }
+    write('wm.fbConfig', cfg2);
+    showToast('設定已存，正在載入 Firebase…','ok');
+    initFirebase().then(function(){ renderSyncSettings(); renderSyncBadge(); })
+      .catch(function(e){ showToast('Firebase 載入失敗：'+(e&&e.message||e),'err',8000); });
+  });
+  if((el = document.getElementById('setIn'))) el.addEventListener('click', function(){
+    signIn().then(function(){ setTimeout(renderSyncSettings, 600); });
+  });
+  if((el = document.getElementById('setOut'))) el.addEventListener('click', function(){
+    signOut(); setTimeout(renderSyncSettings, 300);
+  });
+  if((el = document.getElementById('setPull'))) el.addEventListener('click', function(){
+    syncPull(false).then(function(){ renderSyncSettings(); });
+  });
+  if((el = document.getElementById('setPush'))) el.addEventListener('click', function(){
+    syncPush(false).then(function(){ renderSyncSettings(); });
+  });
+  if((el = document.getElementById('setFbClear'))) el.addEventListener('click', function(){
+    askConfirm({title:'清除 Firebase 設定', danger:true, ok:'清除',
+      body:'只會清掉這台裝置的雲端設定，本機資料與雲端資料都不會被刪。'}, function(){
+      write('wm.fbConfig', null); location.reload();
+    });
+  });
+}
+
 function applyTheme(){
   var t = settings.theme || 'auto';
   if(t === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -3561,6 +3690,7 @@ function handleQuickAdd(){
       '<button class="btn-ghost" id="qaHide">知道了</button></div>');
 
   document.getElementById('qaUndo').addEventListener('click', function(){
+    tomb(rec.id);
     txs = txs.filter(function(t){ return t.id !== rec.id; });
     saveTx(); write('wm.qaLast', null); renderAll();
     qaBanner('<div><div class="qat">已撤銷</div><div class="qas">那筆紀錄移除了。</div></div>'+
@@ -3582,6 +3712,8 @@ function handleQuickAdd(){
    啟動
    ========================================================================== */
 function renderAll(){
+  if(typeof syncSoon === 'function') syncSoon();
+  if(typeof renderSyncBadge === 'function') renderSyncBadge();
   renderHome();
   renderLedger();
   renderRecur();
@@ -3595,6 +3727,238 @@ function renderAll(){
 applyTheme();
 applyNav();
 handleQuickAdd();
+
+/* ==========================================================================
+   雲端同步（Firebase：Google 登入 ＋ Firestore）
+   --------------------------------------------------------------------------
+   為什麼不是整包覆蓋：手機用捷徑記了一筆、電腦分頁還開著舊資料，
+   電腦一存就把手機那筆蓋掉了。所以推上去之前一定先拉下來合併。
+
+   合併規則
+     · 有 id 的清單（帳戶／收支／週期／目標／持股／配息／負債／淨值快照）
+       逐筆比對：同 id 留 updatedAt 較新的那筆。
+     · 刪除靠墓碑：墓碑比紀錄新就代表真的刪了，不會被另一台的舊資料復活。
+     · 分類取聯集——分類只會愈加愈多，用新舊覆蓋會莫名其妙消失。
+     · 預算與設定是整包物件，沒有逐筆時間戳，用「哪一邊比較新」決定。
+
+   Firebase 的設定值（apiKey 那些）是設計成公開的，不是密碼。
+   真正擋人的是 Firebase 的「已授權網域」與 Firestore 安全規則：
+   規則限定只有登入者本人讀得到自己 uid 底下的文件。
+   ========================================================================== */
+var FB_SDK = 'https://cdn.jsdelivr.net/npm/firebase@10.12.2/';
+var fb = {app:null, auth:null, db:null, user:null, ready:false, loading:false};
+
+function syncCfg(){ return read('wm.fbConfig', null); }
+function syncEnabled(){ var c = syncCfg(); return !!(c && c.apiKey && c.projectId); }
+function syncState(){ return read('wm.syncState', {lastPull:'', lastPush:'', err:''}); }
+function setSyncState(o){
+  var st = syncState();
+  Object.keys(o).forEach(function(k){ st[k] = o[k]; });
+  write('wm.syncState', st);
+  renderSyncBadge();
+}
+
+function loadScript(src){
+  return new Promise(function(res, rej){
+    var el = document.createElement('script');
+    el.src = src; el.async = true;
+    el.onload = res;
+    el.onerror = function(){ rej(new Error('載入失敗：'+src)); };
+    document.head.appendChild(el);
+  });
+}
+function initFirebase(){
+  if(fb.ready) return Promise.resolve(fb);
+  if(fb.loading) return fb.loading;
+  var cfg = syncCfg();
+  if(!cfg) return Promise.reject(new Error('還沒填 Firebase 設定'));
+  fb.loading = loadScript(FB_SDK+'firebase-app-compat.js')
+    .then(function(){ return loadScript(FB_SDK+'firebase-auth-compat.js'); })
+    .then(function(){ return loadScript(FB_SDK+'firebase-firestore-compat.js'); })
+    .then(function(){
+      if(!window.firebase) throw new Error('Firebase 沒載進來');
+      fb.app  = window.firebase.apps.length ? window.firebase.app() : window.firebase.initializeApp(cfg);
+      fb.auth = window.firebase.auth();
+      fb.db   = window.firebase.firestore();
+      fb.ready = true;
+      fb.auth.onAuthStateChanged(function(u){
+        fb.user = u || null;
+        renderSyncBadge();
+        if(u) syncPull(true);          // 一登入就先把雲端的拉下來
+      });
+      return fb;
+    })
+    .catch(function(e){ fb.loading = false; throw e; });
+  return fb.loading;
+}
+
+/* ---- 合併 ---- */
+function newerOf(a, b){
+  var ta = (a && a.updatedAt) || '', tb = (b && b.updatedAt) || '';
+  return ta >= tb ? a : b;
+}
+function isTombed(rec, tombList){
+  var t = (rec && rec.updatedAt) || '';
+  for(var i=0;i<tombList.length;i++){
+    if(tombList[i].id === rec.id && tombList[i].at > t) return true;
+  }
+  return false;
+}
+function mergeList(localArr, remoteArr, tombList, key){
+  key = key || 'id';
+  var by = {};
+  (remoteArr||[]).forEach(function(r){ if(r && r[key]) by[r[key]] = r; });
+  (localArr||[]).forEach(function(l){
+    if(!l || !l[key]) return;
+    by[l[key]] = by[l[key]] ? newerOf(l, by[l[key]]) : l;
+  });
+  return Object.keys(by).map(function(k){ return by[k]; }).filter(function(r){
+    var id = key === 'ym' ? ('snap-'+r.ym) : r.id;
+    return !isTombed({id:id, updatedAt:r.updatedAt}, tombList);
+  });
+}
+function unionCats(a, b){
+  var out = (a||[]).slice();
+  (b||[]).forEach(function(c){ if(out.indexOf(c) === -1) out.push(c); });
+  return out;
+}
+function localSnapshot(){
+  return {
+    v: 2,
+    accounts:accounts, tx:txs, cats:cats, recurs:recurs, budgets:budgets, goals:goals,
+    holdings:holdings, divs:divs, debts:debts, snaps:snaps, settings:settings,
+    tombs:tombs,
+    localAt: read('wm.localAt', '') || new Date().toISOString()
+  };
+}
+function applyMerged(m){
+  accounts = m.accounts; txs = m.tx; cats = m.cats; recurs = m.recurs;
+  budgets = m.budgets; goals = m.goals; holdings = m.holdings; divs = m.divs;
+  debts = m.debts; snaps = m.snaps; settings = m.settings; tombs = m.tombs;
+  write(LS.acc, accounts); write(LS.tx, txs); write(LS.cats, cats); write(LS.recur, recurs);
+  write(LS.budgets, budgets); write(LS.goals, goals); write(LS.holds, holdings);
+  write(LS.divs, divs); write(LS.debts, debts); write(LS.snaps, snaps);
+  write(LS.set, settings); saveTombs();
+}
+function mergeWith(remote){
+  var L = localSnapshot();
+  if(!remote) return L;
+  var allTombs = (L.tombs||[]).concat(remote.tombs||[]);
+  var localNewer = (L.localAt||'') >= (remote.localAt||'');
+  return {
+    accounts: mergeList(L.accounts, remote.accounts, allTombs),
+    tx:       mergeList(L.tx,       remote.tx,       allTombs),
+    recurs:   mergeList(L.recurs,   remote.recurs,   allTombs),
+    goals:    mergeList(L.goals,    remote.goals,    allTombs),
+    holdings: mergeList(L.holdings, remote.holdings, allTombs),
+    divs:     mergeList(L.divs,     remote.divs,     allTombs),
+    debts:    mergeList(L.debts,    remote.debts,    allTombs),
+    snaps:    mergeList(L.snaps,    remote.snaps,    allTombs, 'ym'),
+    cats:     {out:unionCats(L.cats.out, (remote.cats||{}).out),
+               in: unionCats(L.cats.in,  (remote.cats||{}).in)},
+    budgets:  localNewer ? L.budgets  : (remote.budgets  || L.budgets),
+    settings: localNewer ? L.settings : (remote.settings || L.settings),
+    tombs:    allTombs,
+    localAt:  localNewer ? L.localAt : remote.localAt
+  };
+}
+
+function docRef(){
+  if(!fb.user) throw new Error('還沒登入');
+  return fb.db.collection('users').doc(fb.user.uid).collection('money').doc('main');
+}
+function syncPull(silent){
+  if(!fb || !fb.ready || !fb.user) return Promise.resolve();
+  return docRef().get().then(function(snap){
+    var remote = snap.exists ? snap.data() : null;
+    if(remote && typeof remote.blob === 'string'){
+      try{ remote = JSON.parse(remote.blob); }catch(e){ remote = null; }
+    }
+    var before = txs.length;
+    applyMerged(mergeWith(remote));
+    setSyncState({lastPull:new Date().toISOString(), err:''});
+    renderAll();
+    if(!silent) showToast('已從雲端取回並合併。', 'ok');
+    else if(txs.length !== before) showToast('已同步雲端資料（收支 '+txs.length+' 筆）。','ok');
+  }).catch(function(e){
+    setSyncState({err:String(e && e.message || e)});
+    if(!silent) showToast('取回失敗：'+(e && e.message || e), 'err', 7000);
+  });
+}
+/* 推之前一定先拉：不先合併就推，等於用這台的資料蓋掉另一台 */
+function syncPush(silent){
+  if(!fb || !fb.ready || !fb.user) return Promise.resolve();
+  return docRef().get().then(function(snap){
+    var remote = snap.exists ? snap.data() : null;
+    if(remote && typeof remote.blob === 'string'){
+      try{ remote = JSON.parse(remote.blob); }catch(e){ remote = null; }
+    }
+    var merged = mergeWith(remote);
+    applyMerged(merged);
+    /* 存成一個字串欄位：Firestore 對巢狀陣列有限制，整包字串最單純，
+       而且個人記帳的資料量離 1 MB 的文件上限還很遠。 */
+    return docRef().set({
+      blob: JSON.stringify(merged),
+      at: new Date().toISOString(),
+      device: navigator.userAgent.slice(0, 120)
+    }).then(function(){
+      setSyncState({lastPush:new Date().toISOString(), err:''});
+      renderAll();
+      if(!silent) showToast('已同步到雲端。', 'ok');
+    });
+  }).catch(function(e){
+    setSyncState({err:String(e && e.message || e)});
+    if(!silent) showToast('上傳失敗：'+(e && e.message || e), 'err', 7000);
+  });
+}
+
+/* 有變動就排一次推送，但要等使用者停手——連續記三筆不該推三次 */
+var pushTimer = null;
+/* renderAll() 在同步模組載入之前就會跑第一次，那時 fb 還是 undefined，
+   所以每個對外的入口都要先確認它存在。 */
+function syncSoon(){
+  if(!fb || !fb.ready || !fb.user) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(function(){ syncPush(true); }, 2500);
+}
+
+function signIn(){
+  return initFirebase().then(function(){
+    var p = new window.firebase.auth.GoogleAuthProvider();
+    return fb.auth.signInWithPopup(p);
+  }).then(function(){
+    showToast('已登入，正在取回雲端資料…','ok');
+  }).catch(function(e){
+    var m = String(e && e.code || e && e.message || e);
+    if(m.indexOf('popup-blocked') !== -1) m = '瀏覽器擋掉了登入視窗，請允許彈出視窗再試。';
+    if(m.indexOf('unauthorized-domain') !== -1) m = '這個網域還沒加到 Firebase 的「已授權網域」。';
+    showToast('登入失敗：'+m, 'err', 8000);
+  });
+}
+function signOut(){
+  if(!fb || !fb.ready) return;
+  fb.auth.signOut().then(function(){ renderSyncBadge(); showToast('已登出。本機資料還在。','ok'); });
+}
+
+/* 側欄的同步狀態列 */
+function renderSyncBadge(){
+  var el = document.getElementById('syncBadge');
+  if(!el) return;
+  if(!syncEnabled()){ el.innerHTML = '<span class="sdot off"></span>未設定雲端同步'; return; }
+  var st = syncState();
+  if(fb && fb.user){
+    var t = st.lastPush || st.lastPull;
+    el.innerHTML = '<span class="sdot on"></span>' + esc((fb.user.email||'已登入').split('@')[0]) +
+      (t ? '　'+t.slice(11,16) : '');
+  } else if(st.err){
+    el.innerHTML = '<span class="sdot err"></span>同步有問題';
+  } else {
+    el.innerHTML = '<span class="sdot off"></span>尚未登入';
+  }
+}
+if(syncEnabled()){
+  initFirebase().catch(function(e){ setSyncState({err:String(e && e.message || e)}); });
+}
 
 </script>
 </body>
