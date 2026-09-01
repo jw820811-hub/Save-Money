@@ -422,22 +422,14 @@
   .goalcard .gacts button{font-size:13px; padding:5px 12px;}
 
   /* ============ 夥伴 ============ */
-  .buddy{display:flex; gap:14px; align-items:flex-start;}
-  .avbtn{background:none; border:none; padding:0; font:inherit; color:inherit;}
-  .avwrap{display:flex; flex-direction:column; align-items:center; gap:7px; flex-shrink:0;}
-  .avatar{position:relative; width:100%; border-radius:var(--r-md); overflow:hidden;
-    border:var(--bw) solid var(--line); background:var(--paper-sunken);}
-  .avatar img{display:block; width:100%; height:100%; object-fit:cover; object-position:50% 28%;}
-  .avwrap.ok .avatar{border-color:var(--ok);}
-  .avwrap.warn .avatar{border-color:var(--warn);}
-  .avwrap.crit .avatar{border-color:var(--danger);}
-  .avwrap.empty .avatar{border-style:dashed;}
+  .buddy{display:block;}
   .moodtag{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:900;
-    color:var(--muted); white-space:nowrap;}
+    color:var(--muted); white-space:nowrap; border:2px solid var(--line); border-radius:var(--r-pill);
+    padding:2px 9px; background:var(--paper-sunken); vertical-align:middle; margin-left:8px;}
   .moodtag i{width:8px; height:8px; border-radius:50%; background:var(--neutral); flex-shrink:0;}
-  .avwrap.ok .moodtag i{background:var(--ok);}
-  .avwrap.warn .moodtag i{background:var(--warn);}
-  .avwrap.crit .moodtag i{background:var(--danger);}
+  .moodtag.ok i{background:var(--ok);}
+  .moodtag.warn i{background:var(--warn);}
+  .moodtag.crit i{background:var(--danger);}
   .buddy .bsay{
     background:var(--paper-sunken); border:2px solid var(--line); border-radius:var(--r-md);
     padding:11px 14px; font-size:14.5px; line-height:1.65; flex:1; font-weight:600;
@@ -947,11 +939,6 @@
 <div class="ctip" id="ctip"></div>
 
 <script>
-/* 預設不內嵌任何照片。使用者要的是「仿真」的角色圖，不是把參考照裁一裁貼上去；
-   這個 session 沒有影像生成能力，畫不出照片級的人像，所以預設留一個空的肖像框，
-   由使用者在設定裡上傳自己準備好的圖（存進 localStorage 的 wm.settings.buddyImg）。 */
-var BUDDY_DEFAULT_IMG = '';
-
 /* ==========================================================================
    分類圖示
    --------------------------------------------------------------------------
@@ -1112,23 +1099,32 @@ var divs     = read(LS.divs, []);
 var debts    = read(LS.debts, []);
 var snaps    = read(LS.snaps, []);
 var settings = read(LS.set, null) || {};
-if(!settings.fixedCats) settings.fixedCats = DEFAULT_FIXED.slice();
-if(!settings.buddyName) settings.buddyName = '小助手';
-if(settings.buddyOn === undefined) settings.buddyOn = true;
-if(!settings.emergencyMonths) settings.emergencyMonths = 6;
-/* 角色改成仿真肖像後，舊的髮色／衣服／眼睛顏色設定已無作用，一次清掉。 */
-if(settings.charVersion !== 3){
+/* 補預設值。雲端合併回來的設定可能來自舊版、或整包缺欄位，所以這件事要能
+   重複做——合併之後再叫一次，就不會因為少一個 fixedCats 讓整個畫面壞掉。 */
+function normalizeSettings(){
+  if(!settings.fixedCats) settings.fixedCats = DEFAULT_FIXED.slice();
+  if(!settings.buddyName) settings.buddyName = '小助手';
+  if(settings.buddyOn === undefined) settings.buddyOn = true;
+  if(!settings.emergencyMonths) settings.emergencyMonths = 6;
+  if(!settings.logoFont) settings.logoFont = 'pacifico';
+  if(!settings.theme) settings.theme = 'auto';
+  if(!settings.plMode) settings.plMode = 'net';
+  if(settings.feeDiscount == null) settings.feeDiscount = 0.28;
+  /* 角色的圖像功能已移除：一張 base64 肖像佔掉瀏覽器好幾百 KB，也頂到雲端
+     單一文件的上限。舊版留下來的一律丟掉，把空間還回去。 */
+  if(settings.buddyImg) delete settings.buddyImg;
+}
+normalizeSettings();
+/* 舊版的髮色／衣服／眼睛顏色與肖像設定已無作用，一次清乾淨。 */
+if(settings.charVersion !== 4){
   delete settings.hair; delete settings.outfit; delete settings.eyeColor;
-  settings.charVersion = 3;
+  delete settings.buddyImg;
+  settings.charVersion = 4;
   write(LS.set, settings);
 }
-if(settings.buddyImg === undefined) settings.buddyImg = '';
-if(!settings.logoFont) settings.logoFont = 'pacifico';
 /* 損益口徑：net = 扣掉賣出手續費與證交稅的參考損益（跟券商 App 同一個口徑）。
    折扣 0.28 是 2026-08-31 用使用者的國泰世華實際數字反推出來的：
    毛損益 50,038 − 券商 49,699 = 339 = 證交稅 241 + 手續費 98(2.8折，最低20)。 */
-if(!settings.plMode) settings.plMode = 'net';
-if(settings.feeDiscount == null) settings.feeDiscount = 0.28;
 /* 分類改版：把新的預設分類補進使用者現有的清單，不刪掉他自己加的。 */
 if(settings.catsVersion !== 2){
   DEFAULT_CATS.out.forEach(function(c){ if(cats.out.indexOf(c) === -1) cats.out.push(c); });
@@ -2039,15 +2035,9 @@ document.getElementById('budToday').addEventListener('click', function(){ budMon
 /* ==========================================================================
    夥伴角色
    --------------------------------------------------------------------------
-   純 SVG 畫的 Q 版角色，髮色與衣服顏色可在設定裡調。四種表情由本月的
-   收支狀況決定，不是隨機的——她說的話要對得上帳面。
-   ========================================================================== */
-/* ==========================================================================
-   夥伴角色（仿真肖像）
-   --------------------------------------------------------------------------
-   使用者要的是仿真而非 Q 版，所以角色是一張真實比例的肖像圖，不是手繪 SVG。
-   表情無法隨心情改變，因此心情改由外框顏色與底部標籤表達，說的話仍然
-   完全由本月帳面決定。設定裡可換成自己的照片。
+   角色不放圖像。寫實肖像存成 base64 會吃掉瀏覽器好幾百 KB 的空間，也撐爆
+   雲端單一文件的上限，換來的只是一張不會變表情的靜態照片。所以心情改由
+   標題旁的彩色標籤表達，說的話仍然完全由本月帳面決定。
    ========================================================================== */
 var MOOD_META = {
   happy:{cls:'ok',   label:'心情不錯'},
@@ -2056,24 +2046,16 @@ var MOOD_META = {
   think:{cls:'warn', label:'在幫你算'},
   worry:{cls:'crit', label:'有點擔心'}
 };
-function buddyImgSrc(){ return settings.buddyImg || BUDDY_DEFAULT_IMG; }
-/* 沒有肖像時只放一個乾淨的剪影框。手繪 SVG 做不到寫實，硬畫只會難看，
-   所以預設留白，由使用者上傳自己準備好的圖。 */
-function avatarPlaceholder(){
-  return '<svg viewBox="0 0 100 128" preserveAspectRatio="xMidYMid slice" aria-hidden="true" '+
-    'style="width:100%; height:100%; display:block; background:var(--paper-sunken);">'+
-    '<circle cx="50" cy="46" r="19" fill="var(--line-strong)" opacity=".5"/>'+
-    '<path d="M13 128c0-21 16-37 37-37s37 16 37 37z" fill="var(--line-strong)" opacity=".5"/>'+
-    '</svg>';
-}
-function buddyAvatar(mood, w, h){
+function moodPill(mood){
   var m = MOOD_META[mood] || MOOD_META.neutral;
-  var src = buddyImgSrc();
-  var inner = src ? '<img src="'+src+'" alt="'+esc(settings.buddyName)+'">' : avatarPlaceholder();
-  /* 心情標籤放在圖下方而不是壓在圖上：壓上去會蓋住下巴與嘴。 */
-  return '<div class="avwrap '+(src?m.cls:'empty')+'" style="width:'+w+'px;">'+
-    '<div class="avatar" style="height:'+h+'px;">'+inner+'</div>'+
-    '<span class="moodtag">'+(src ? '<i></i>'+esc(m.label) : '點這裡設定肖像')+'</span></div>';
+  return '<span class="moodtag '+m.cls+'"><i></i>'+esc(m.label)+'</span>';
+}
+/* 慶祝畫面用一個獎章圖形代替原本的人像。 */
+function celeMark(){
+  return '<svg viewBox="0 0 96 96" width="92" height="92" aria-hidden="true">'+
+    '<circle cx="48" cy="48" r="40" fill="var(--yellow)" stroke="var(--line)" stroke-width="4"/>'+
+    '<path d="M31 49l12 12 22-25" fill="none" stroke="var(--line)" stroke-width="7" '+
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
 }
 
 function buddyState(){
@@ -2123,18 +2105,14 @@ function renderBuddy(){
   if(!settings.buddyOn){ panel.hidden = true; return; }
   panel.hidden = false;
   var st = buddyState();
-  document.getElementById('buddyTitle').textContent = settings.buddyName + '說';
+  document.getElementById('buddyTitle').innerHTML = esc(settings.buddyName) + '說' + moodPill(st.mood);
   box.className = 'buddy';
-  box.innerHTML = '<button class="avbtn" id="buddyPick" title="設定角色肖像">'+
-    buddyAvatar(st.mood, 104, 132)+'</button><div class="bsay">'+st.text+'</div>';
-  document.getElementById('buddyPick').addEventListener('click', function(){
-    document.getElementById('settingsBtn').click();
-  });
+  box.innerHTML = '<div class="bsay">'+st.text+'</div>';
 }
 
 /* ---- 慶祝 ---- */
 function celebrate(title, body){
-  document.getElementById('celeChar').innerHTML = buddyAvatar('cheer', 140, 178);
+  document.getElementById('celeChar').innerHTML = celeMark();
   document.getElementById('celeTitle').textContent = title;
   document.getElementById('celeBody').textContent = body;
   var wrap = document.getElementById('confetti');
@@ -3265,14 +3243,6 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
       '<input id="setName" type="text" value="'+esc(settings.buddyName)+'"></div>'+
     '<div class="field"><label for="setEmg">緊急預備金目標（月）</label>'+
       '<input id="setEmg" type="number" min="1" max="24" value="'+esc(settings.emergencyMonths)+'"></div></div>'+
-    '<div class="field"><label>角色肖像</label>'+
-      '<div id="setPreview" style="display:flex; justify-content:center; padding:12px; background:var(--paper-sunken); border-radius:12px;">'+
-      buddyAvatar('happy',120,156)+'</div>'+
-      '<div class="rowline" style="margin-top:10px;">'+
-      '<input type="file" id="setImgPick" accept="image/*" class="grow">'+
-      '<button class="btn-ghost" id="setImgReset">還原預設</button></div>'+
-      '<p class="hint">換成任何一張圖都可以。圖片會縮到 480px 寬、轉成 JPEG 存在瀏覽器裡，'+
-      '也會跟著備份檔走。臉在畫面上偏上方，所以人像照片最好是正面胸像。</p></div>'+
     '<div class="field"><label>算成「固定支出」的分類</label><div class="chiprow" id="setFixed">'+
       cats.out.map(function(c){
         return '<button type="button" class="chipopt'+(isFixed(c)?' sel':'')+'" data-fx="'+esc(c)+'">'+esc(c)+'</button>';
@@ -3319,44 +3289,6 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
         bt.classList.add('on');
       });
     });
-    var pendingImg = null;
-    function preview(){
-      var old = settings.buddyImg;
-      if(pendingImg !== null) settings.buddyImg = pendingImg;
-      document.getElementById('setPreview').innerHTML = buddyAvatar('happy',120,156);
-      settings.buddyImg = old;
-    }
-    /* 在 canvas 上縮圖再存：原圖動輒好幾 MB，localStorage 大約只有 5MB。 */
-    document.getElementById('setImgPick').addEventListener('change', function(){
-      var f = this.files && this.files[0];
-      if(!f) return;
-      if(!/^image\//.test(f.type)){ showToast('請選一張圖片檔。','err'); return; }
-      var reader = new FileReader();
-      reader.onload = function(){
-        var img = new Image();
-        img.onload = function(){
-          var maxW = 480;
-          var w = Math.min(maxW, img.width), h = Math.round(img.height * w / img.width);
-          var cv = document.createElement('canvas');
-          cv.width = w; cv.height = h;
-          cv.getContext('2d').drawImage(img, 0, 0, w, h);
-          try{
-            pendingImg = cv.toDataURL('image/jpeg', 0.84);
-            if(pendingImg.length > 900000){ pendingImg = cv.toDataURL('image/jpeg', 0.7); }
-            preview();
-            showToast('預覽已更新，按「儲存」才會存起來。','ok');
-          }catch(e){ showToast('這張圖片讀不進來，換一張試試。','err'); }
-        };
-        img.onerror = function(){ showToast('這張圖片讀不進來，換一張試試。','err'); };
-        img.src = reader.result;
-      };
-      reader.readAsDataURL(f);
-    });
-    document.getElementById('setImgReset').addEventListener('click', function(){
-      pendingImg = '';
-      preview();
-      showToast('已還原成預設肖像，按「儲存」生效。','ok');
-    });
     Array.prototype.forEach.call(document.querySelectorAll('[data-fx]'), function(bt){
       bt.addEventListener('click', function(){ bt.classList.toggle('sel'); });
     });
@@ -3379,7 +3311,6 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
       settings.buddyOn = document.getElementById('setBuddy').checked;
       settings.buddyName = document.getElementById('setName').value.trim() || '小助手';
       settings.emergencyMonths = Math.max(1, Number(document.getElementById('setEmg').value)||6);
-      if(pendingImg !== null) settings.buddyImg = pendingImg;
       settings.fixedCats = Array.prototype.map.call(document.querySelectorAll('[data-fx].sel'), function(x){ return x.getAttribute('data-fx'); });
       saveSettings(); applyTheme(); renderBrand(); closeModal('genBackdrop'); renderAll(); showToast('設定已儲存。','ok');
     });
@@ -3490,7 +3421,7 @@ function renderStorage(){
     '<p class="hint" style="margin-top:0;">已用約 <b>'+kb(u.total)+'</b>（瀏覽器上限大約 5 MB，'+pct+'%）</p>';
   h += '<div style="font-size:12.5px; color:var(--muted); font-weight:700;">' +
     u.rows.slice(0,5).map(function(r){
-      var name = ({'wm.tx':'收支紀錄','wm.tombs':'刪除紀錄','wm.settings':'設定（含角色肖像）',
+      var name = ({'wm.tx':'收支紀錄','wm.tombs':'刪除紀錄','wm.settings':'設定',
                    'wm.holdings':'持股','wm.accounts':'帳戶','wm.goals':'目標'})[r.k] || r.k;
       return name+' '+kb(r.bytes);
     }).join('　') + '</div>';
@@ -3934,10 +3865,8 @@ function unionCats(a, b){
   (b||[]).forEach(function(c){ if(out.indexOf(c) === -1) out.push(c); });
   return out;
 }
-/* 角色肖像不進雲端：那是一張 base64 圖，最大將近 1 MB，
-   而 Firestore 單一文件的上限就是 1 MB——一張照片就足以把整份資料卡死，
-   而且每台裝置每次同步都要重傳一次。肖像留在各自的裝置上就好，
-   本來就是「這台裝置想看到誰」的偏好，不是帳務資料。 */
+/* 角色肖像功能已移除，但舊版裝置可能還在雲端留著一張 base64 圖（將近 1 MB，
+   正好是 Firestore 單一文件的上限）。上傳時濾掉、下載時也丟掉，讓那張圖自然消失。 */
 function syncableSettings(){
   var out = {};
   Object.keys(settings).forEach(function(k){ if(k !== 'buddyImg') out[k] = settings[k]; });
@@ -3956,9 +3885,9 @@ function applyMerged(m){
   accounts = m.accounts; txs = m.tx; cats = m.cats; recurs = m.recurs;
   budgets = m.budgets; goals = m.goals; holdings = m.holdings; divs = m.divs;
   debts = m.debts; snaps = m.snaps; tombs = m.tombs;
-  var myImg = settings.buddyImg;                 // 肖像不跟著雲端走
   settings = m.settings || settings;
-  if(myImg) settings.buddyImg = myImg;
+  /* 雲端來的設定可能缺欄位或帶著舊版肖像，補完＋清乾淨再落地。 */
+  if(typeof normalizeSettings === 'function') normalizeSettings();
   write(LS.acc, accounts); write(LS.tx, txs); write(LS.cats, cats); write(LS.recur, recurs);
   write(LS.budgets, budgets); write(LS.goals, goals); write(LS.holds, holdings);
   write(LS.divs, divs); write(LS.debts, debts); write(LS.snaps, snaps);
