@@ -1066,7 +1066,24 @@ function read(key, def){
 }
 function write(key, val){
   try{ localStorage.setItem(key, JSON.stringify(val)); return true; }
-  catch(e){ showToast('存不進瀏覽器，空間可能滿了。請先匯出備份再清理。', 'err', 8000); return false; }
+  catch(e){
+    /* 空間滿了先自救：墓碑是最可能失控的東西，清一輪再試一次。
+       真的還是存不進去才吵使用者，而且只吵一次，不要洗版。 */
+    try{
+      if(typeof dedupeTombs === 'function' && typeof tombs !== 'undefined'){
+        tombs = dedupeTombs(tombs).slice(0, 500);
+        localStorage.setItem('wm.tombs', JSON.stringify(tombs));
+      }
+      localStorage.setItem(key, JSON.stringify(val));
+      return true;
+    }catch(e2){
+      if(!write._warned){
+        write._warned = true;
+        showToast('存不進瀏覽器，空間滿了。請到設定看儲存用量，或先匯出備份。', 'err', 9000);
+      }
+      return false;
+    }
+  }
 }
 function uid(p){ return (p||'x') + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7); }
 
@@ -1378,15 +1395,26 @@ function avgMonthlyExpense(n){
    所以刪除要留墓碑（tombstone）：記下 id 與刪除時間，比紀錄還新就代表真的被刪了。
    ========================================================================== */
 var tombs = read('wm.tombs', []);
-function saveTombs(){ write('wm.tombs', tombs); }
+/* 同一個 id 只留最新的一筆，並丟掉半年前的。
+   合併時是「本機墓碑 ＋ 雲端墓碑」接起來，沒去重的話每同步一次就翻倍，
+   幾輪之後就把瀏覽器的儲存空間塞爆——這是 2026-08-31 手機跳「存不進瀏覽器」的原因。 */
+function dedupeTombs(list){
+  var by = {}, cut = new Date(Date.now() - 180*86400000).toISOString();
+  (list||[]).forEach(function(t){
+    if(!t || !t.id || !t.at || t.at < cut) return;
+    if(!by[t.id] || t.at > by[t.id].at) by[t.id] = {id:t.id, at:t.at};
+  });
+  var out = Object.keys(by).map(function(k){ return by[k]; });
+  out.sort(function(a,b){ return a.at < b.at ? 1 : -1; });
+  return out.slice(0, 3000);          // 再怎麼刪也不該超過這個數
+}
+tombs = dedupeTombs(tombs);
+function saveTombs(){ tombs = dedupeTombs(tombs); write('wm.tombs', tombs); }
 function stamp(o){ o.updatedAt = new Date().toISOString(); if(!o.createdAt) o.createdAt = o.updatedAt; return o; }
 function tomb(){
   var ids = Array.prototype.slice.call(arguments);
   var at = new Date().toISOString();
   ids.forEach(function(id){ if(id) tombs.push({id:id, at:at}); });
-  /* 墓碑留半年就夠了——比這更舊的紀錄不可能還在另一台裝置上等著復活 */
-  var cut = new Date(Date.now() - 180*86400000).toISOString();
-  tombs = tombs.filter(function(t){ return t.at > cut; });
   saveTombs();
   touchLocal();
 }
@@ -3216,6 +3244,7 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
       '<p class="hint" id="setLogoNote"></p></div>'+
     '<div class="field"><label>雲端同步（電腦與手機共用同一份資料）</label>'+
       '<div id="setSyncBox"></div></div>'+
+    '<div class="field"><label>瀏覽器儲存用量</label><div id="setStorage"></div></div>'+
     '<div class="field"><label>持股損益口徑</label>'+
       '<div class="seg" id="setPlMode">'+
       '<button data-pl="net"'+((settings.plMode||'net')==='net'?' class="on"':'')+'>參考損益</button>'+
@@ -3257,6 +3286,7 @@ document.getElementById('settingsBtn').addEventListener('click', function(){
     '<button class="btn-primary" id="setSave">儲存</button></div>';
   openModal('genBackdrop','genModal', h, function(){
     renderSyncSettings();
+    renderStorage();
     var plMode = settings.plMode || 'net';
     Array.prototype.forEach.call(document.querySelectorAll('#setPlMode button'), function(bt){
       bt.addEventListener('click', function(){
@@ -3431,6 +3461,50 @@ function renderSyncSettings(){
       body:'會改回內建的雲端專案。本機資料與兩邊雲端的資料都不會被刪。'}, function(){
       write('wm.fbConfig', null); location.reload();
     });
+  });
+}
+
+/* 瀏覽器的 localStorage 大約只有 5 MB。哪個鍵佔最多要看得到，
+   不然「空間滿了」就只是一句沒有下一步的抱怨。 */
+function storageUsage(){
+  var rows = [], total = 0;
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k = localStorage.key(i);
+      var v = localStorage.getItem(k) || '';
+      var bytes = (k.length + v.length) * 2;      // UTF-16
+      total += bytes;
+      if(k.indexOf('wm.') === 0) rows.push({k:k, bytes:bytes});
+    }
+  }catch(e){}
+  rows.sort(function(a,b){ return b.bytes - a.bytes; });
+  return {rows:rows, total:total};
+}
+function kb(n){ return n >= 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.round(n/1024)+' KB'; }
+function renderStorage(){
+  var box = document.getElementById('setStorage');
+  if(!box) return;
+  var u = storageUsage();
+  var pct = Math.min(100, Math.round(u.total / (5*1024*1024) * 100));
+  var h = '<div class="hbar'+(pct>80?' over':'')+'" style="margin:0 0 8px;"><i style="width:'+pct+'%"></i></div>'+
+    '<p class="hint" style="margin-top:0;">已用約 <b>'+kb(u.total)+'</b>（瀏覽器上限大約 5 MB，'+pct+'%）</p>';
+  h += '<div style="font-size:12.5px; color:var(--muted); font-weight:700;">' +
+    u.rows.slice(0,5).map(function(r){
+      var name = ({'wm.tx':'收支紀錄','wm.tombs':'刪除紀錄','wm.settings':'設定（含角色肖像）',
+                   'wm.holdings':'持股','wm.accounts':'帳戶','wm.goals':'目標'})[r.k] || r.k;
+      return name+' '+kb(r.bytes);
+    }).join('　') + '</div>';
+  if(pct > 60 || (u.rows[0] && u.rows[0].k === 'wm.tombs')){
+    h += '<button class="btn-ghost" id="setPrune" style="margin-top:10px;">清理刪除紀錄</button>';
+  }
+  box.innerHTML = h;
+  var el = document.getElementById('setPrune');
+  if(el) el.addEventListener('click', function(){
+    var before = tombs.length;
+    tombs = dedupeTombs(tombs).slice(0, 500);
+    write('wm.tombs', tombs);
+    renderStorage();
+    showToast('刪除紀錄從 '+before+' 筆清成 '+tombs.length+' 筆。','ok');
   });
 }
 
@@ -3860,11 +3934,20 @@ function unionCats(a, b){
   (b||[]).forEach(function(c){ if(out.indexOf(c) === -1) out.push(c); });
   return out;
 }
+/* 角色肖像不進雲端：那是一張 base64 圖，最大將近 1 MB，
+   而 Firestore 單一文件的上限就是 1 MB——一張照片就足以把整份資料卡死，
+   而且每台裝置每次同步都要重傳一次。肖像留在各自的裝置上就好，
+   本來就是「這台裝置想看到誰」的偏好，不是帳務資料。 */
+function syncableSettings(){
+  var out = {};
+  Object.keys(settings).forEach(function(k){ if(k !== 'buddyImg') out[k] = settings[k]; });
+  return out;
+}
 function localSnapshot(){
   return {
     v: 2,
     accounts:accounts, tx:txs, cats:cats, recurs:recurs, budgets:budgets, goals:goals,
-    holdings:holdings, divs:divs, debts:debts, snaps:snaps, settings:settings,
+    holdings:holdings, divs:divs, debts:debts, snaps:snaps, settings:syncableSettings(),
     tombs:tombs,
     localAt: read('wm.localAt', '') || new Date().toISOString()
   };
@@ -3872,7 +3955,10 @@ function localSnapshot(){
 function applyMerged(m){
   accounts = m.accounts; txs = m.tx; cats = m.cats; recurs = m.recurs;
   budgets = m.budgets; goals = m.goals; holdings = m.holdings; divs = m.divs;
-  debts = m.debts; snaps = m.snaps; settings = m.settings; tombs = m.tombs;
+  debts = m.debts; snaps = m.snaps; tombs = m.tombs;
+  var myImg = settings.buddyImg;                 // 肖像不跟著雲端走
+  settings = m.settings || settings;
+  if(myImg) settings.buddyImg = myImg;
   write(LS.acc, accounts); write(LS.tx, txs); write(LS.cats, cats); write(LS.recur, recurs);
   write(LS.budgets, budgets); write(LS.goals, goals); write(LS.holds, holdings);
   write(LS.divs, divs); write(LS.debts, debts); write(LS.snaps, snaps);
@@ -3881,7 +3967,8 @@ function applyMerged(m){
 function mergeWith(remote){
   var L = localSnapshot();
   if(!remote) return L;
-  var allTombs = (L.tombs||[]).concat(remote.tombs||[]);
+  /* 一定要去重，否則每合併一次墓碑就翻倍 */
+  var allTombs = dedupeTombs((L.tombs||[]).concat(remote.tombs||[]));
   var localNewer = (L.localAt||'') >= (remote.localAt||'');
   return {
     accounts: mergeList(L.accounts, remote.accounts, allTombs),
@@ -3936,9 +4023,18 @@ function syncPush(silent){
     applyMerged(merged);
     /* 存成一個字串欄位：Firestore 對巢狀陣列有限制，整包字串最單純，
        而且個人記帳的資料量離 1 MB 的文件上限還很遠。 */
+    var blob = JSON.stringify(merged);
+    /* Firestore 單一文件上限 1 MB。與其讓它丟出看不懂的錯誤，不如先講清楚。 */
+    if(blob.length > 900000){
+      setSyncState({err:'資料量已達雲端單一文件的上限（約 1 MB）。請先匯出備份，'+
+        '再到設定清理刪除紀錄，或刪掉太久以前的收支。'});
+      renderSyncBadge();
+      return;
+    }
     return docRef().set({
-      blob: JSON.stringify(merged),
+      blob: blob,
       at: new Date().toISOString(),
+      bytes: blob.length,
       device: navigator.userAgent.slice(0, 120)
     }).then(function(){
       fb.lastSynced = JSON.stringify(localSnapshot());
